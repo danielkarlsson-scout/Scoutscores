@@ -1,8 +1,8 @@
-import { useState } from 'react';
-import { useCompetition } from '@/contexts/CompetitionContext';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { useState } from "react";
+import { useCompetition } from "@/contexts/CompetitionContext";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Dialog,
   DialogContent,
@@ -11,8 +11,8 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
-import { Plus } from 'lucide-react';
+} from "@/components/ui/dialog";
+import { Plus } from "lucide-react";
 
 interface CompetitionFormProps {
   trigger?: React.ReactNode;
@@ -22,22 +22,27 @@ interface CompetitionFormProps {
 export function CompetitionForm({ trigger, onSuccess }: CompetitionFormProps) {
   const { createCompetition } = useCompetition();
   const [open, setOpen] = useState(false);
-  const [name, setName] = useState('');
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [name, setName] = useState("");
+  const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (!name.trim()) return;
-    
-    createCompetition({
-      name: name.trim(),
-      date,
-    });
+
+    // ✅ Viktigt: skapa som aktiv som standard
+    await Promise.resolve(
+      createCompetition({
+        name: name.trim(),
+        date,
+        is_active: true,
+        registration_open: false, // valfritt men bra att ha explicit
+      })
+    );
 
     setOpen(false);
-    setName('');
-    setDate(new Date().toISOString().split('T')[0]);
+    setName("");
+    setDate(new Date().toISOString().split("T")[0]);
     onSuccess?.();
   };
 
@@ -51,6 +56,7 @@ export function CompetitionForm({ trigger, onSuccess }: CompetitionFormProps) {
           </Button>
         )}
       </DialogTrigger>
+
       <DialogContent>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
@@ -59,7 +65,7 @@ export function CompetitionForm({ trigger, onSuccess }: CompetitionFormProps) {
               Skapa en ny scouttävling för att börja registrera stationer, patruller och poäng.
             </DialogDescription>
           </DialogHeader>
-          
+
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
               <Label htmlFor="name">Tävlingsnamn</Label>
@@ -67,11 +73,11 @@ export function CompetitionForm({ trigger, onSuccess }: CompetitionFormProps) {
                 id="name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="T.ex. Vårscoutkampen 2025"
+                placeholder="T.ex. Vårscoutkampen 2026"
                 required
               />
             </div>
-            
+
             <div className="grid gap-2">
               <Label htmlFor="date">Datum</Label>
               <Input
@@ -83,14 +89,12 @@ export function CompetitionForm({ trigger, onSuccess }: CompetitionFormProps) {
               />
             </div>
           </div>
-          
+
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>
               Avbryt
             </Button>
-            <Button type="submit">
-              Skapa tävling
-            </Button>
+            <Button type="submit">Skapa tävling</Button>
           </DialogFooter>
         </form>
       </DialogContent>
