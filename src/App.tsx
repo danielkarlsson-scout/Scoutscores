@@ -7,6 +7,7 @@ import { CompetitionProvider } from "@/contexts/CompetitionContext";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { ProtectedRoute } from "@/components/layout/ProtectedRoute";
+
 import Dashboard from "./pages/Dashboard";
 import Competitions from "./pages/Competitions";
 import Stations from "./pages/Stations";
@@ -19,14 +20,15 @@ import Admin from "./pages/Admin";
 import NotFound from "./pages/NotFound";
 import ResetPassword from "./pages/ResetPassword";
 import VerifyEmail from "./pages/VerifyEmail";
-// Behåll eventuell befintlig PatrolRegistration om du vill ha både intern och publik varianter
+
+// Intern/admin-sida (behåll om den används)
 import PatrolRegistration from "./pages/PatrolRegistration";
-// Den nya publika anmälningssidan (lägg till filen src/pages/Anmalan.tsx)
+
+// ✅ NY PUBLIK SIDA
 import Anmalan from "@/pages/Anmalan";
 
 const queryClient = new QueryClient();
 
-// Wrapper to conditionally show AppLayout for logged-in users
 function ScoreboardWrapper() {
   return <Scoreboard />;
 }
@@ -40,10 +42,18 @@ const App = () => (
           <Sonner />
           <BrowserRouter>
             <Routes>
+              {/* Publika auth-routes */}
               <Route path="/login" element={<Login />} />
               <Route path="/reset-password" element={<ResetPassword />} />
               <Route path="/verify-email" element={<VerifyEmail />} />
 
+              {/* Publik anmälningssida */}
+              <Route path="/anmalan" element={<Anmalan />} />
+
+              {/* Publik resultattavla */}
+              <Route path="/scoreboard" element={<ScoreboardWrapper />} />
+
+              {/* Skyddade routes */}
               <Route
                 path="/"
                 element={
@@ -110,30 +120,24 @@ const App = () => (
                 }
               />
 
-              {/* Scoreboard is public - anyone with the link can view */}
-              <Route path="/scoreboard" element={<ScoreboardWrapper />} />
-
-              {/* Public patrol registration (ny publikt tillgänglig sida) */}
-              <Route path="/anmalan" element={<Anmalan />} />
-
-              {/* Behåll intern sida för patrol registration om ni behöver den */}
-              <Route
-                path="/patrol-registration"
-                element={
-                  <ProtectedRoute requireAdmin>
-                    <AppLayout>
-                      <PatrolRegistration />
-                    </AppLayout>
-                  </ProtectedRoute>
-                }
-              />
-
               <Route
                 path="/admin"
                 element={
                   <ProtectedRoute requireAdmin>
                     <AppLayout>
                       <Admin />
+                    </AppLayout>
+                  </ProtectedRoute>
+                }
+              />
+
+              {/* Ev. intern sida för hantering */}
+              <Route
+                path="/patrol-registration"
+                element={
+                  <ProtectedRoute requireAdmin>
+                    <AppLayout>
+                      <PatrolRegistration />
                     </AppLayout>
                   </ProtectedRoute>
                 }
