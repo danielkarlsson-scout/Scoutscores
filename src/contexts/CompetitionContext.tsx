@@ -43,13 +43,13 @@ interface CompetitionContextType {
   updatePatrol: (id: string, updates: Partial<Patrol>) => void;
   deletePatrol: (id: string) => void;
 
-  // Scout Group actions
-  addScoutGroup: (name: string) => void;
-  updateScoutGroup: (id: string, name: string) => void;
-  deleteScoutGroup: (id: string) => void;
-  importScoutGroupsFromTemplate: (templateId: string) => void;
+  // Scout Group actions (DB-kopplade)
+  addScoutGroup: (name: string) => Promise<void>;
+  updateScoutGroup: (id: string, name: string) => Promise<void>;
+  deleteScoutGroup: (id: string) => Promise<void>;
+  importScoutGroupsFromTemplate: (templateId: string) => Promise<void>;
 
-  // Scout Group Template actions
+  // Scout Group Template actions (lokalt i localStorage)
   scoutGroupTemplates: ScoutGroupTemplate[];
   createScoutGroupTemplate: (name: string, groups: string[]) => void;
   deleteScoutGroupTemplate: (id: string) => void;
@@ -140,52 +140,86 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     }
   }, [selectedId, activeCompetitions]);
 
-  // Competition management
-  const createCompetition = useCallback(
-    async (data: { name: string; date: string }): Promise<Competition> => {
-      const name = data.name.trim();
-      const date = data.date;
-
-      if (!name) {
-        throw new Error("Competition name is required");
-      }
-
-      // 1) Create in Supabase (public.competitions)
-      const { data: dbComp, error } = await supabase
-        .from("competitions")
-        .insert({
-          name,
-          date,
-          is_active: true,
-        })
-        .select("id,name,date,is_active")
-        .single();
-
-      if (error || !dbComp) {
-        console.error("Failed to create competition in DB:", error);
-        throw error ?? new Error("Failed to create competition");
-      }
-
-      // 2) Create local Competition object (app-model)
-      const newCompetition: Competition = {
-        id: dbComp.id, // <-- DB UUID
-        name: dbComp.name,
-        date: dbComp.date,
-        status: "active",
-        stations: [],
-        patrols: [],
-        scores: [],
-        scoutGroups: [],
-        createdAt: new Date().toISOString(),
-      };
-
-      setCompetitions((prev) => [...prev, newCompetition]);
-      setSelectedId(newCompetition.id);
-
-      return newCompetition;
+  // Helper to update current competition
+  const updateCurrentCompetition = useCallback(
+    (updater: (comp: Competition) => Competition) => {
+      if (!selectedId) return;
+      setCompetitions((prev) => prev.map((c) => (c.id === selectedId ? updater(c) : c)));
     },
-    []
+    [selectedId]
   );
+
+  // ✅ Hämta kårer från Supabase när vald tävling ändras
+  useEffect(() => {
+    if (!selectedId) return;
+
+    (async () => {
+      const { data, error } = await supabase
+        .from("scout_groups")
+        .select("id,name,competition_id,created_at")
+        .eq("competition_id", selectedId)
+        .order("name", { ascending: true });
+
+      if (error) {
+        console.error("Kunde inte hämta kårer från databasen:", error);
+        return;
+      }
+
+      const groups: ScoutGroup[] = (data ?? []).map((row: any) => ({
+        id: row.id,
+        name: row.name,
+        createdAt: row.created_at ?? new Date().toISOString(),
+      }));
+
+      setCompetitions((prev) =>
+        prev.map((c) => (c.id === selectedId ? { ...c, scoutGroups: groups } : c))
+      );
+    })();
+  }, [selectedId]);
+
+  // Competition management
+  const createCompetition = useCallback(async (data: { name: string; date: string }): Promise<Competition> => {
+    const name = data.name.trim();
+    const date = data.date;
+
+    if (!name) {
+      throw new Error("Competition name is required");
+    }
+
+    // 1) Create in Supabase (public.competitions)
+    const { data: dbComp, error } = await supabase
+      .from("competitions")
+      .insert({
+        name,
+        date,
+        is_active: true,
+      })
+      .select("id,name,date,is_active")
+      .single();
+
+    if (error || !dbComp) {
+      console.error("Failed to create competition in DB:", error);
+      throw error ?? new Error("Failed to create competition");
+    }
+
+    // 2) Create local Competition object (app-model)
+    const newCompetition: Competition = {
+      id: dbComp.id, // <-- DB UUID
+      name: dbComp.name,
+      date: dbComp.date,
+      status: "active",
+      stations: [],
+      patrols: [],
+      scores: [],
+      scoutGroups: [],
+      createdAt: new Date().toISOString(),
+    };
+
+    setCompetitions((prev) => [...prev, newCompetition]);
+    setSelectedId(newCompetition.id);
+
+    return newCompetition;
+  }, []);
 
   const selectCompetition = useCallback((id: string) => {
     setSelectedId(id);
@@ -212,7 +246,9 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
   const reopenCompetition = useCallback((id: string) => {
     setCompetitions((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, status: "active" as CompetitionStatus, closedAt: undefined } : c))
+      prev.map((c) =>
+        c.id === id ? { ...c, status: "active" as CompetitionStatus, closedAt: undefined } : c
+      )
     );
   }, []);
 
@@ -225,15 +261,6 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       }
     },
     [competitions, selectedId]
-  );
-
-  // Helper to update current competition
-  const updateCurrentCompetition = useCallback(
-    (updater: (comp: Competition) => Competition) => {
-      if (!selectedId) return;
-      setCompetitions((prev) => prev.map((c) => (c.id === selectedId ? updater(c) : c)));
-    },
-    [selectedId]
   );
 
   // Station actions
@@ -358,8 +385,6 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
         const stationScores: Record<string, number> = {};
         let totalScore = 0;
 
-ff
-
         patrolScores.forEach((s) => {
           stationScores[s.stationId] = s.score;
           totalScore += s.score;
@@ -408,36 +433,70 @@ ff
     setCompetitions((prev) => prev.map((c) => (c.id === id ? { ...c, ...updates } : c)));
   }, []);
 
-  // Scout Group actions
+  // ✅ Scout Group actions (DB-kopplade)
   const addScoutGroup = useCallback(
-    (name: string) => {
+    async (name: string) => {
+      if (!selectedId) return;
+      const trimmed = name.trim();
+      if (!trimmed) return;
+
+      const { data, error } = await supabase
+        .from("scout_groups")
+        .insert({
+          name: trimmed,
+          competition_id: selectedId,
+        })
+        .select("id,name,created_at")
+        .single();
+
+      if (error || !data) {
+        console.error("Kunde inte skapa kår:", error);
+        return;
+      }
+
+      const newGroup: ScoutGroup = {
+        id: data.id,
+        name: data.name,
+        createdAt: data.created_at ?? new Date().toISOString(),
+      };
+
       updateCurrentCompetition((comp) => ({
         ...comp,
-        scoutGroups: [
-          ...(comp.scoutGroups ?? []),
-          {
-            id: generateId(),
-            name: name.trim(),
-            createdAt: new Date().toISOString(),
-          },
-        ],
+        scoutGroups: [...(comp.scoutGroups ?? []), newGroup],
       }));
     },
-    [updateCurrentCompetition]
+    [selectedId, updateCurrentCompetition]
   );
 
   const updateScoutGroup = useCallback(
-    (id: string, name: string) => {
+    async (id: string, name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+
+      const { error } = await supabase.from("scout_groups").update({ name: trimmed }).eq("id", id);
+
+      if (error) {
+        console.error("Kunde inte uppdatera kår:", error);
+        return;
+      }
+
       updateCurrentCompetition((comp) => ({
         ...comp,
-        scoutGroups: (comp.scoutGroups ?? []).map((g) => (g.id === id ? { ...g, name: name.trim() } : g)),
+        scoutGroups: (comp.scoutGroups ?? []).map((g) => (g.id === id ? { ...g, name: trimmed } : g)),
       }));
     },
     [updateCurrentCompetition]
   );
 
   const deleteScoutGroup = useCallback(
-    (id: string) => {
+    async (id: string) => {
+      const { error } = await supabase.from("scout_groups").delete().eq("id", id);
+
+      if (error) {
+        console.error("Kunde inte ta bort kår:", error);
+        return;
+      }
+
       updateCurrentCompetition((comp) => ({
         ...comp,
         scoutGroups: (comp.scoutGroups ?? []).filter((g) => g.id !== id),
@@ -482,27 +541,44 @@ ff
   );
 
   const importScoutGroupsFromTemplate = useCallback(
-    (templateId: string) => {
+    async (templateId: string) => {
+      if (!selectedId) return;
+
       const template = scoutGroupTemplates.find((t) => t.id === templateId);
       if (!template) return;
 
-      updateCurrentCompetition((comp) => {
-        const existingNames = new Set((comp.scoutGroups ?? []).map((g) => g.name.toLowerCase()));
-        const newGroups = template.groups
-          .filter((name) => !existingNames.has(name.toLowerCase()))
-          .map((name) => ({
-            id: generateId(),
-            name,
-            createdAt: new Date().toISOString(),
-          }));
+      // Filtrera bort namn som redan finns lokalt
+      const existingNames = new Set((scoutGroups ?? []).map((g) => g.name.toLowerCase()));
+      const namesToAdd = template.groups.filter((n) => !existingNames.has(n.toLowerCase()));
+      if (namesToAdd.length === 0) return;
 
-        return {
-          ...comp,
-          scoutGroups: [...(comp.scoutGroups ?? []), ...newGroups],
-        };
-      });
+      const rowsToInsert = namesToAdd.map((name) => ({
+        name,
+        competition_id: selectedId,
+      }));
+
+      const { data, error } = await supabase
+        .from("scout_groups")
+        .insert(rowsToInsert)
+        .select("id,name,created_at");
+
+      if (error) {
+        console.error("Kunde inte importera kårer från mall:", error);
+        return;
+      }
+
+      const newGroups: ScoutGroup[] = (data ?? []).map((row: any) => ({
+        id: row.id,
+        name: row.name,
+        createdAt: row.created_at ?? new Date().toISOString(),
+      }));
+
+      updateCurrentCompetition((comp) => ({
+        ...comp,
+        scoutGroups: [...(comp.scoutGroups ?? []), ...newGroups],
+      }));
     },
-    [scoutGroupTemplates, updateCurrentCompetition]
+    [selectedId, scoutGroupTemplates, scoutGroups, updateCurrentCompetition]
   );
 
   return (
