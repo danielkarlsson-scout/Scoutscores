@@ -18,15 +18,7 @@ type ScoutGroup = {
   competition_id: string;
 };
 
-function formatSupabaseError(error: any) {
-  if (!error) return null;
-  const msg = error.message ? String(error.message) : "Okänt fel";
-  const details = error.details ? String(error.details) : "";
-  const hint = error.hint ? String(error.hint) : "";
-  const code = error.code ? String(error.code) : "";
-  const extra = [details, hint, code ? `code: ${code}` : ""].filter(Boolean).join(" — ");
-  return extra ? `${msg} — ${extra}` : msg;
-}
+type Section = "sparare" | "upptackare" | "aventyrare" | "utmanare";
 
 export default function Anmalan() {
   const [loading, setLoading] = useState(true);
@@ -42,10 +34,8 @@ export default function Anmalan() {
 
   // Form state
   const [patrolName, setPatrolName] = useState("");
-  const [section, setSection] = useState<"sparare" | "upptackare" | "aventyrare" | "utmanare">(
-    "sparare"
-  );
-  const [contactName, setContactName] = useState("");
+  const [section, setSection] = useState<Section>("sparare");
+  const [memberCount, setMemberCount] = useState<string>(""); // optional
   const [contactEmail, setContactEmail] = useState("");
 
   // Load active competitions
@@ -61,9 +51,9 @@ export default function Anmalan() {
         .order("date", { ascending: true });
 
       if (error) {
-        console.error("Fetch competitions error:", error);
+        console.error(error);
         setCompetitions([]);
-        setMessage(`Kunde inte hämta aktiva tävlingar. (${formatSupabaseError(error)})`);
+        setMessage("Kunde inte hämta aktiva tävlingar.");
         setLoading(false);
         return;
       }
@@ -71,11 +61,11 @@ export default function Anmalan() {
       const list = (data ?? []) as Competition[];
       setCompetitions(list);
 
-      // Auto-select if only one, annars defaulta till första om inget valt
+      // Auto-select
       if (list.length === 1) {
         setSelectedCompetitionId(list[0].id);
       } else if (list.length > 1) {
-        setSelectedCompetitionId((prev) => (prev ? prev : list[0].id));
+        setSelectedCompetitionId((prev) => prev || list[0].id);
       } else {
         setSelectedCompetitionId("");
       }
@@ -93,11 +83,9 @@ export default function Anmalan() {
     (async () => {
       setMessage(null);
       setScoutGroups([]);
+      setSelectedScoutGroupId("");
 
-      if (!selectedCompetitionId) {
-        setSelectedScoutGroupId("");
-        return;
-      }
+      if (!selectedCompetitionId) return;
 
       const { data, error } = await supabase
         .from("scout_groups")
@@ -106,23 +94,23 @@ export default function Anmalan() {
         .order("name", { ascending: true });
 
       if (error) {
-        console.error("Fetch scout_groups error:", error);
-        setSelectedScoutGroupId("");
-        setMessage(`Kunde inte hämta kårer för vald tävling. (${formatSupabaseError(error)})`);
+        console.error(error);
+        setMessage("Kunde inte hämta kårer för vald tävling.");
         return;
       }
 
       const groups = (data ?? []) as ScoutGroup[];
       setScoutGroups(groups);
 
-      // Behåll tidigare vald kår om den finns i nya listan
-      setSelectedScoutGroupId((prev) => {
-        if (prev && groups.some((g) => g.id === prev)) return prev;
-        if (groups.length === 1) return groups[0].id; // auto-välj om exakt 1
-        return ""; // annars tvinga användaren välja
-      });
+      if (groups.length === 1) {
+        setSelectedScoutGroupId(groups[0].id);
+      }
     })();
   }, [selectedCompetitionId]);
+
+  const selectedScoutGroup = useMemo(() => {
+    return scoutGroups.find((g) => g.id === selectedScoutGroupId) ?? null;
+  }, [scoutGroups, selectedScoutGroupId]);
 
   const disabled = useMemo(() => {
     return (
@@ -130,10 +118,9 @@ export default function Anmalan() {
       !selectedCompetitionId ||
       !patrolName.trim() ||
       !selectedScoutGroupId ||
-      !contactName.trim() ||
       !contactEmail.trim()
     );
-  }, [submitting, selectedCompetitionId, patrolName, selectedScoutGroupId, contactName, contactEmail]);
+  }, [submitting, selectedCompetitionId, patrolName, selectedScoutGroupId, contactEmail]);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -143,50 +130,48 @@ export default function Anmalan() {
       setMessage("Välj en tävling.");
       return;
     }
-    if (!selectedScoutGroupId) {
+
+    if (!selectedScoutGroup) {
       setMessage("Välj en kår.");
+      return;
+    }
+
+    // member_count: optional (om tomt -> null)
+    const parsedMemberCount =
+      memberCount.trim() === "" ? null : Number(memberCount);
+
+    if (parsedMemberCount !== null && (!Number.isFinite(parsedMemberCount) || parsedMemberCount < 0)) {
+      setMessage("Antal medlemmar måste vara ett giltigt tal (0 eller mer).");
       return;
     }
 
     setSubmitting(true);
 
-    // OBS: Justera kolumnnamn här om din tabell skiljer sig.
+    // ✅ Matchar exakt public.patrol_registrations-kolumnerna
     const payload = {
       competition_id: selectedCompetitionId,
-      scout_group_id: selectedScoutGroupId,
       patrol_name: patrolName.trim(),
-      scout_section: section,
-      contact_name: contactName.trim(),
+      scout_group_name: selectedScoutGroup.name, // <- viktigt: DB vill ha NAME (text)
+      section, // <- viktigt: matcha enum värden
+      member_count: parsedMemberCount,
       contact_email: contactEmail.trim(),
       status: "pending",
     };
 
-    const { data, error } = await supabase
-      .from("patrol_registrations")
-      .insert(payload)
-      .select("id"); // select => bra för att se om RLS stoppar
+    const { error } = await supabase.from("patrol_registrations").insert(payload);
 
     if (error) {
-      console.error("Insert patrol_registrations error:", error, { payload });
-      setMessage(`Något gick fel när anmälan skulle skickas. (${formatSupabaseError(error)})`);
-      setSubmitting(false);
-      return;
-    }
-
-    // Extra säkerhet om insert inte returnerade något
-    if (!data || data.length === 0) {
-      setMessage(
-        "Anmälan skickades inte (ingen rad returnerades). Kontrollera RLS-policy på patrol_registrations."
-      );
+      console.error(error);
+      setMessage(`Något gick fel när anmälan skulle skickas. (${error.message})`);
       setSubmitting(false);
       return;
     }
 
     setMessage("✅ Tack! Anmälan är inskickad och väntar på godkännande.");
     setPatrolName("");
-    setContactName("");
     setContactEmail("");
     setSection("sparare");
+    setMemberCount("");
     setSubmitting(false);
   };
 
@@ -232,8 +217,7 @@ export default function Anmalan() {
         </div>
       ) : (
         <p className="mt-2">
-          Anmäl patrull till:{" "}
-          <span className="font-medium">{selectedCompetition?.name}</span>
+          Anmäl patrull till: <span className="font-medium">{selectedCompetition?.name}</span>
         </p>
       )}
 
@@ -251,12 +235,12 @@ export default function Anmalan() {
             onChange={(e) => setSelectedScoutGroupId(e.target.value)}
             disabled={!selectedCompetitionId || scoutGroups.length === 0}
           >
-            <option value="">
-              {!selectedCompetitionId
-                ? "Välj tävling först"
-                : scoutGroups.length > 0
+            <option value="" disabled>
+              {selectedCompetitionId
+                ? scoutGroups.length > 0
                   ? "Välj kår"
-                  : "Inga kårer kopplade till tävlingen"}
+                  : "Inga kårer kopplade till tävlingen"
+                : "Välj tävling först"}
             </option>
 
             {scoutGroups.map((g) => (
@@ -272,7 +256,7 @@ export default function Anmalan() {
           <select
             className="w-full rounded-md border bg-background px-3 py-2"
             value={section}
-            onChange={(e) => setSection(e.target.value as any)}
+            onChange={(e) => setSection(e.target.value as Section)}
           >
             <option value="sparare">Spårare</option>
             <option value="upptackare">Upptäckare</option>
@@ -282,8 +266,13 @@ export default function Anmalan() {
         </div>
 
         <div className="space-y-1">
-          <Label>Kontaktperson *</Label>
-          <Input value={contactName} onChange={(e) => setContactName(e.target.value)} />
+          <Label>Antal medlemmar</Label>
+          <Input
+            inputMode="numeric"
+            placeholder="Valfritt"
+            value={memberCount}
+            onChange={(e) => setMemberCount(e.target.value)}
+          />
         </div>
 
         <div className="space-y-1">
