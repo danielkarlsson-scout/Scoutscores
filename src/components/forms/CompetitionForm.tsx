@@ -1,8 +1,8 @@
-import { useState } from 'react';
-import { useCompetition } from '@/contexts/CompetitionContext';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { useState } from "react";
+import { useCompetition } from "@/contexts/CompetitionContext";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Dialog,
   DialogContent,
@@ -11,8 +11,8 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
-import { Plus } from 'lucide-react';
+} from "@/components/ui/dialog";
+import { Plus } from "lucide-react";
 
 interface CompetitionFormProps {
   trigger?: React.ReactNode;
@@ -22,35 +22,55 @@ interface CompetitionFormProps {
 export function CompetitionForm({ trigger, onSuccess }: CompetitionFormProps) {
   const { createCompetition } = useCompetition();
   const [open, setOpen] = useState(false);
-  const [name, setName] = useState('');
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const [name, setName] = useState("");
+  const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
+
+  const resetForm = () => {
+    setName("");
+    setDate(new Date().toISOString().split("T")[0]);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (!name.trim()) return;
-    
-    createCompetition({
-      name: name.trim(),
-      date,
-    });
+    if (!name.trim() || submitting) return;
 
-    setOpen(false);
-    setName('');
-    setDate(new Date().toISOString().split('T')[0]);
-    onSuccess?.();
+    setSubmitting(true);
+    try {
+      await createCompetition({
+        name: name.trim(),
+        date,
+      });
+
+      setOpen(false);
+      resetForm();
+      onSuccess?.();
+    } catch (err) {
+      console.error("Failed to create competition:", err);
+      // valfritt: visa toast här om ni vill
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) resetForm();
+      }}
+    >
       <DialogTrigger asChild>
         {trigger ?? (
-          <Button>
+          <Button disabled={submitting}>
             <Plus className="h-4 w-4 mr-2" />
             Ny tävling
           </Button>
         )}
       </DialogTrigger>
+
       <DialogContent>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
@@ -59,7 +79,7 @@ export function CompetitionForm({ trigger, onSuccess }: CompetitionFormProps) {
               Skapa en ny scouttävling för att börja registrera stationer, patruller och poäng.
             </DialogDescription>
           </DialogHeader>
-          
+
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
               <Label htmlFor="name">Tävlingsnamn</Label>
@@ -69,9 +89,10 @@ export function CompetitionForm({ trigger, onSuccess }: CompetitionFormProps) {
                 onChange={(e) => setName(e.target.value)}
                 placeholder="T.ex. Vårscoutkampen 2025"
                 required
+                disabled={submitting}
               />
             </div>
-            
+
             <div className="grid gap-2">
               <Label htmlFor="date">Datum</Label>
               <Input
@@ -80,16 +101,17 @@ export function CompetitionForm({ trigger, onSuccess }: CompetitionFormProps) {
                 value={date}
                 onChange={(e) => setDate(e.target.value)}
                 required
+                disabled={submitting}
               />
             </div>
           </div>
-          
+
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+            <Button type="button" variant="outline" onClick={() => setOpen(false)} disabled={submitting}>
               Avbryt
             </Button>
-            <Button type="submit">
-              Skapa tävling
+            <Button type="submit" disabled={submitting || !name.trim()}>
+              {submitting ? "Skapar…" : "Skapa tävling"}
             </Button>
           </DialogFooter>
         </form>
