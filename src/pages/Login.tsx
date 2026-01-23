@@ -12,7 +12,7 @@ import { useToast } from '@/hooks/use-toast';
 
 export default function Login() {
   const navigate = useNavigate();
-  const { signIn, signUp } = useAuth();
+  const { signIn } = useAuth(); // ✅ signUp tas bort här
   const { toast } = useToast();
   const [loading, setLoading] = useState(false);
   const [showForgotPassword, setShowForgotPassword] = useState(false);
@@ -36,9 +36,10 @@ export default function Login() {
     if (error) {
       toast({
         title: 'Inloggning misslyckades',
-        description: error.message === 'Email not confirmed' 
-          ? 'Din e-post är inte verifierad. Kolla din inkorg för verifieringslänken.'
-          : error.message,
+        description:
+          error.message === 'Email not confirmed'
+            ? 'Din e-post är inte verifierad. Kolla din inkorg för verifieringslänken.'
+            : error.message,
         variant: 'destructive',
       });
     } else {
@@ -75,7 +76,19 @@ export default function Login() {
 
     setLoading(true);
 
-    const { error } = await signUp(signupEmail, signupPassword);
+    // ✅ VIKTIGT: emailRedirectTo för att inte få localhost-länk i mail
+    const redirectTo =
+      import.meta.env.PROD
+        ? 'https://scoutscores.vercel.app/verify-email'
+        : 'http://localhost:5173/verify-email';
+
+    const { error } = await supabase.auth.signUp({
+      email: signupEmail,
+      password: signupPassword,
+      options: {
+        emailRedirectTo: redirectTo,
+      },
+    });
 
     if (error) {
       toast({
@@ -94,8 +107,13 @@ export default function Login() {
     e.preventDefault();
     setLoading(true);
 
+    const redirectTo =
+      import.meta.env.PROD
+        ? 'https://scoutscores.vercel.app/reset-password'
+        : 'http://localhost:5173/reset-password';
+
     const { error } = await supabase.auth.resetPasswordForEmail(forgotPasswordEmail, {
-      redirectTo: `${window.location.origin}/reset-password`,
+      redirectTo,
     });
 
     if (error) {
@@ -285,6 +303,7 @@ export default function Login() {
                 </Button>
               </form>
             </TabsContent>
+
             <TabsContent value="signup">
               <form onSubmit={handleSignup} className="space-y-4">
                 <div className="space-y-2">
