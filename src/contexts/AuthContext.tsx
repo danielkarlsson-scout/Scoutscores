@@ -111,14 +111,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error };
   };
 
+  // ✅ UPPDATERAD: alltid rätt redirect för verifieringsmail
   const signUp = async (email: string, password: string) => {
+    const redirectTo =
+      import.meta.env.PROD
+        ? 'https://scoutscores.vercel.app/verify-email'
+        : 'http://localhost:5173/verify-email';
+
     const { error } = await supabase.auth.signUp({
       email,
       password,
       options: {
-        emailRedirectTo: window.location.origin,
+        emailRedirectTo: redirectTo,
       },
     });
+
     return { error };
   };
 
