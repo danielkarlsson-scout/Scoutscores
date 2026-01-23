@@ -1,106 +1,130 @@
-import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { supabase } from '@/integrations/supabase/client';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { TreePine, Loader2, CheckCircle2, XCircle } from 'lucide-react';
+import { useEffect, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { supabase } from "@/integrations/supabase/client";
+
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Loader2, MailCheck, AlertTriangle } from "lucide-react";
+
+type Status = "loading" | "success" | "error";
 
 export default function VerifyEmail() {
   const navigate = useNavigate();
-  const [status, setStatus] = useState<'checking' | 'success' | 'error'>('checking');
+  const [status, setStatus] = useState<Status>("loading");
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    const handleVerification = async () => {
-      // The hash fragment contains the access token from the email link
-      const hashParams = new URLSearchParams(window.location.hash.substring(1));
-      const accessToken = hashParams.get('access_token');
-      const type = hashParams.get('type');
+    let cancelled = false;
 
-      if (type === 'signup' || type === 'email_change') {
-        // Supabase handles the verification automatically when the link is clicked
-        const { data: { session } } = await supabase.auth.getSession();
-        
-        if (session) {
-          setStatus('success');
-        } else {
-          setStatus('error');
+    (async () => {
+      try {
+        // Supabase skickar hit en URL med ?code=... (OAuth/PKCE-flöde)
+        const url = window.location.href;
+        const hasCode = new URL(url).searchParams.get("code");
+
+        if (!hasCode) {
+          // Om någon råkar gå hit manuellt utan code
+          if (!cancelled) {
+            setStatus("error");
+            setErrorMessage("Saknar verifieringskod. Öppna länken från e-postmeddelandet igen.");
+          }
+          return;
         }
-      } else {
-        // Check if already verified
-        const { data: { session } } = await supabase.auth.getSession();
-        if (session) {
-          setStatus('success');
-        } else {
-          setStatus('error');
+
+        const { error } = await supabase.auth.exchangeCodeForSession(url);
+
+        if (error) {
+          if (!cancelled) {
+            setStatus("error");
+            setErrorMessage(error.message);
+          }
+          return;
+        }
+
+        if (!cancelled) {
+          setStatus("success");
+        }
+
+        // Valfritt: skicka vidare automatiskt efter några sekunder
+        setTimeout(() => {
+          if (!cancelled) navigate("/");
+        }, 1200);
+      } catch (err: any) {
+        if (!cancelled) {
+          setStatus("error");
+          setErrorMessage(err?.message ?? "Okänt fel vid verifiering.");
         }
       }
+    })();
+
+    return () => {
+      cancelled = true;
     };
-
-    // Listen for auth state changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        if (event === 'SIGNED_IN' && session) {
-          setStatus('success');
-        }
-      }
-    );
-
-    handleVerification();
-
-    return () => subscription.unsubscribe();
-  }, []);
-
-  if (status === 'checking') {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="text-center">
-          <Loader2 className="h-8 w-8 animate-spin text-primary mx-auto mb-4" />
-          <p className="text-muted-foreground">Verifierar din e-post...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (status === 'success') {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center p-4">
-        <Card className="w-full max-w-md">
-          <CardHeader className="text-center">
-            <div className="flex justify-center mb-4">
-              <CheckCircle2 className="h-12 w-12 text-primary" />
-            </div>
-            <CardTitle className="text-2xl">E-post verifierad!</CardTitle>
-            <CardDescription>
-              Din e-postadress har verifierats. Du kan nu logga in och använda ScoutScore.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Button onClick={() => navigate('/')} className="w-full">
-              Fortsätt till appen
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+  }, [navigate]);
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-4">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
-          <div className="flex justify-center mb-4">
-            <XCircle className="h-12 w-12 text-destructive" />
-          </div>
-          <CardTitle className="text-2xl">Verifiering misslyckades</CardTitle>
+          {status === "loading" && (
+            <div className="flex justify-center mb-4">
+              <Loader2 className="h-12 w-12 animate-spin text-primary" />
+            </div>
+          )}
+
+          {status === "success" && (
+            <div className="flex justify-center mb-4">
+              <MailCheck className="h-12 w-12 text-primary" />
+            </div>
+          )}
+
+          {status === "error" && (
+            <div className="flex justify-center mb-4">
+              <AlertTriangle className="h-12 w-12 text-destructive" />
+            </div>
+          )}
+
+          <CardTitle className="text-2xl">
+            {status === "loading" && "Verifierar…"}
+            {status === "success" && "E-post bekräftad!"}
+            {status === "error" && "Kunde inte verifiera"}
+          </CardTitle>
+
           <CardDescription>
-            Länken kan ha gått ut eller redan använts. 
-            Försök logga in eller registrera dig igen.
+            {status === "loading" && "Vänta medan vi bekräftar din e-postadress."}
+            {status === "success" && "Klart! Du skickas vidare strax."}
+            {status === "error" && (errorMessage ?? "Verifieringslänken kan vara felaktig eller utgången.")}
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          <Button onClick={() => navigate('/login')} className="w-full">
-            Tillbaka till inloggning
-          </Button>
+
+        <CardContent className="space-y-3">
+          {status === "error" && (
+            <div className="space-y-2">
+              <Button className="w-full" onClick={() => navigate("/login")}>
+                Till inloggning
+              </Button>
+
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={() => window.location.reload()}
+              >
+                Försök igen
+              </Button>
+            </div>
+          )}
+
+          {status === "success" && (
+            <Button className="w-full" onClick={() => navigate("/")}>
+              Gå till appen
+            </Button>
+          )}
+
+          {status === "loading" && (
+            <Button variant="outline" className="w-full" asChild>
+              <Link to="/login">Tillbaka</Link>
+            </Button>
+          )}
         </CardContent>
       </Card>
     </div>
