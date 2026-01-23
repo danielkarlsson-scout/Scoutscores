@@ -177,7 +177,7 @@ export function PatrolRegistrations() {
           </Button>
         </div>
         <CardDescription>
-          Granska och godkänn patrulanmälningar från den publika anmälningssidan
+          Granska och godkänn patrullanmälningar från den publika anmälningssidan
         </CardDescription>
       </CardHeader>
       <CardContent>
