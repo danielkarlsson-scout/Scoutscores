@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 
-// Byt till era shadcn-komponenter om ni redan har dem
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,95 +12,157 @@ type Competition = {
   is_active: boolean;
 };
 
+type ScoutGroup = {
+  id: string;
+  name: string;
+  competition_id: string;
+};
+
 export default function Anmalan() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [activeCompetition, setActiveCompetition] = useState<Competition | null>(null);
+
+  const [competitions, setCompetitions] = useState<Competition[]>([]);
+  const [selectedCompetitionId, setSelectedCompetitionId] = useState<string>("");
+
+  const [scoutGroups, setScoutGroups] = useState<ScoutGroup[]>([]);
+  const [selectedScoutGroupId, setSelectedScoutGroupId] = useState<string>("");
+
   const [message, setMessage] = useState<string | null>(null);
 
-  // Form state (håll det enkelt)
+  // Form state
   const [patrolName, setPatrolName] = useState("");
-  const [corpsName, setCorpsName] = useState("");
   const [section, setSection] = useState<"sparare" | "upptackare" | "aventyrare" | "utmanare">("sparare");
   const [contactName, setContactName] = useState("");
   const [contactEmail, setContactEmail] = useState("");
-  const [contactPhone, setContactPhone] = useState("");
 
+  // Load active competitions
   useEffect(() => {
     (async () => {
       setLoading(true);
       setMessage(null);
 
-      // Hämtar aktiv tävling (antar en kolumn is_active i competitions)
       const { data, error } = await supabase
         .from("competitions")
         .select("id,name,date,is_active")
         .eq("is_active", true)
-        .order("date", { ascending: true })
-        .limit(1)
-        .maybeSingle();
+        .order("date", { ascending: true });
 
       if (error) {
-        setMessage("Kunde inte hämta aktiv tävling.");
-        setActiveCompetition(null);
-      } else {
-        setActiveCompetition((data as Competition) ?? null);
+        console.error(error);
+        setCompetitions([]);
+        setMessage("Kunde inte hämta aktiva tävlingar.");
+        setLoading(false);
+        return;
+      }
+
+      const list = ((data ?? []) as Competition[]);
+      setCompetitions(list);
+
+      // Auto-select if only one
+      if (list.length === 1) {
+        setSelectedCompetitionId(list[0].id);
+      } else if (list.length > 1) {
+        // If none selected yet, pick first as default
+        setSelectedCompetitionId((prev) => prev || list[0].id);
       }
 
       setLoading(false);
     })();
   }, []);
 
+  const selectedCompetition = useMemo(() => {
+    return competitions.find((c) => c.id === selectedCompetitionId) ?? null;
+  }, [competitions, selectedCompetitionId]);
+
+  // Load scout groups for selected competition
+  useEffect(() => {
+    (async () => {
+      setMessage(null);
+      setScoutGroups([]);
+      setSelectedScoutGroupId("");
+
+      if (!selectedCompetitionId) return;
+
+      // ⚠️ Antagande: tabellen heter "scout_groups" och har (id, name, competition_id)
+      const { data, error } = await supabase
+        .from("scout_groups")
+        .select("id,name,competition_id")
+        .eq("competition_id", selectedCompetitionId)
+        .order("name", { ascending: true });
+
+      if (error) {
+        console.error(error);
+        setMessage("Kunde inte hämta kårer för vald tävling.");
+        return;
+      }
+
+      const groups = ((data ?? []) as ScoutGroup[]);
+      setScoutGroups(groups);
+
+      // Auto-select if only one
+      if (groups.length === 1) {
+        setSelectedScoutGroupId(groups[0].id);
+      }
+    })();
+  }, [selectedCompetitionId]);
+
   const disabled = useMemo(() => {
     return (
-      !activeCompetition ||
+      !selectedCompetitionId ||
       !patrolName.trim() ||
-      !corpsName.trim() ||
+      !selectedScoutGroupId ||
       !contactName.trim() ||
       !contactEmail.trim()
     );
-  }, [activeCompetition, patrolName, corpsName, contactName, contactEmail]);
+  }, [selectedCompetitionId, patrolName, selectedScoutGroupId, contactName, contactEmail]);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setMessage(null);
 
-    if (!activeCompetition) {
-      setMessage("Det finns ingen aktiv tävling att anmäla sig till just nu.");
+    if (!selectedCompetitionId) {
+      setMessage("Välj en tävling.");
+      return;
+    }
+
+    if (!selectedScoutGroupId) {
+      setMessage("Välj en kår.");
       return;
     }
 
     setSubmitting(true);
 
-    // OBS: kolumnnamn kan behöva justeras beroende på er schema.
-    // Här är ett rimligt upplägg som matchar "inkomna anmälningar"-flödet.
+    // OBS: justera kolumnnamn så de matchar din tabell patrol_registrations.
     const payload = {
-      competition_id: activeCompetition.id,
+      competition_id: selectedCompetitionId,
+      // om din tabell använder scout_group_id (vanligt), annars byt till corps_name eller liknande
+      scout_group_id: selectedScoutGroupId,
+
       patrol_name: patrolName.trim(),
-      corps_name: corpsName.trim(),
-      scout_section: section, // eller "section" beroende på schema
+      scout_section: section, // om kolumnen heter "section" byt här
       contact_name: contactName.trim(),
       contact_email: contactEmail.trim(),
-      contact_phone: contactPhone.trim() || null,
-      status: "pending", // om ni har status-kolumn
+
+      status: "pending", // om du har status-kolumn, annars ta bort
     };
 
     const { error } = await supabase.from("patrol_registrations").insert(payload);
 
     if (error) {
       console.error(error);
-      setMessage("Något gick fel när anmälan skulle skickas. Kontrollera fält och försök igen.");
+      setMessage("Något gick fel när anmälan skulle skickas. Försök igen.");
       setSubmitting(false);
       return;
     }
 
     setMessage("✅ Tack! Anmälan är inskickad och väntar på godkännande.");
     setPatrolName("");
-    setCorpsName("");
     setContactName("");
     setContactEmail("");
-    setContactPhone("");
     setSection("sparare");
+
+    // behåll vald tävling/kår så man kan skicka flera
     setSubmitting(false);
   };
 
@@ -114,7 +175,7 @@ export default function Anmalan() {
     );
   }
 
-  if (!activeCompetition) {
+  if (competitions.length === 0) {
     return (
       <div className="mx-auto max-w-xl p-6">
         <h1 className="text-2xl font-semibold">Patrullanmälan</h1>
@@ -124,12 +185,32 @@ export default function Anmalan() {
     );
   }
 
+  const showCompetitionSelect = competitions.length > 1;
+
   return (
     <div className="mx-auto max-w-xl p-6">
       <h1 className="text-2xl font-semibold">Patrullanmälan</h1>
-      <p className="mt-2">
-        Anmäl patrull till: <span className="font-medium">{activeCompetition.name}</span>
-      </p>
+
+      {showCompetitionSelect ? (
+        <div className="mt-4 space-y-1">
+          <Label>Tävling *</Label>
+          <select
+            className="w-full rounded-md border bg-background px-3 py-2"
+            value={selectedCompetitionId}
+            onChange={(e) => setSelectedCompetitionId(e.target.value)}
+          >
+            {competitions.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      ) : (
+        <p className="mt-2">
+          Anmäl patrull till: <span className="font-medium">{selectedCompetition?.name}</span>
+        </p>
+      )}
 
       <form onSubmit={onSubmit} className="mt-6 space-y-4">
         <div className="space-y-1">
@@ -139,7 +220,26 @@ export default function Anmalan() {
 
         <div className="space-y-1">
           <Label>Kår *</Label>
-          <Input value={corpsName} onChange={(e) => setCorpsName(e.target.value)} />
+          <select
+            className="w-full rounded-md border bg-background px-3 py-2"
+            value={selectedScoutGroupId}
+            onChange={(e) => setSelectedScoutGroupId(e.target.value)}
+            disabled={!selectedCompetitionId || scoutGroups.length === 0}
+          >
+            <option value="" disabled>
+              {selectedCompetitionId
+                ? scoutGroups.length > 0
+                  ? "Välj kår"
+                  : "Inga kårer kopplade till tävlingen"
+                : "Välj tävling först"}
+            </option>
+
+            {scoutGroups.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name}
+              </option>
+            ))}
+          </select>
         </div>
 
         <div className="space-y-1">
@@ -163,12 +263,11 @@ export default function Anmalan() {
 
         <div className="space-y-1">
           <Label>E-post *</Label>
-          <Input type="email" value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} />
-        </div>
-
-        <div className="space-y-1">
-          <Label>Telefon</Label>
-          <Input value={contactPhone} onChange={(e) => setContactPhone(e.target.value)} />
+          <Input
+            type="email"
+            value={contactEmail}
+            onChange={(e) => setContactEmail(e.target.value)}
+          />
         </div>
 
         <Button type="submit" disabled={disabled || submitting}>
