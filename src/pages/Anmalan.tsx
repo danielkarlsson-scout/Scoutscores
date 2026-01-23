@@ -18,6 +18,16 @@ type ScoutGroup = {
   competition_id: string;
 };
 
+function formatSupabaseError(error: any) {
+  if (!error) return null;
+  const msg = error.message ? String(error.message) : "Okänt fel";
+  const details = error.details ? String(error.details) : "";
+  const hint = error.hint ? String(error.hint) : "";
+  const code = error.code ? String(error.code) : "";
+  const extra = [details, hint, code ? `code: ${code}` : ""].filter(Boolean).join(" — ");
+  return extra ? `${msg} — ${extra}` : msg;
+}
+
 export default function Anmalan() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -32,7 +42,9 @@ export default function Anmalan() {
 
   // Form state
   const [patrolName, setPatrolName] = useState("");
-  const [section, setSection] = useState<"sparare" | "upptackare" | "aventyrare" | "utmanare">("sparare");
+  const [section, setSection] = useState<"sparare" | "upptackare" | "aventyrare" | "utmanare">(
+    "sparare"
+  );
   const [contactName, setContactName] = useState("");
   const [contactEmail, setContactEmail] = useState("");
 
@@ -49,22 +61,23 @@ export default function Anmalan() {
         .order("date", { ascending: true });
 
       if (error) {
-        console.error(error);
+        console.error("Fetch competitions error:", error);
         setCompetitions([]);
-        setMessage("Kunde inte hämta aktiva tävlingar.");
+        setMessage(`Kunde inte hämta aktiva tävlingar. (${formatSupabaseError(error)})`);
         setLoading(false);
         return;
       }
 
-      const list = ((data ?? []) as Competition[]);
+      const list = (data ?? []) as Competition[];
       setCompetitions(list);
 
-      // Auto-select if only one
+      // Auto-select if only one, annars defaulta till första om inget valt
       if (list.length === 1) {
         setSelectedCompetitionId(list[0].id);
       } else if (list.length > 1) {
-        // If none selected yet, pick first as default
-        setSelectedCompetitionId((prev) => prev || list[0].id);
+        setSelectedCompetitionId((prev) => (prev ? prev : list[0].id));
+      } else {
+        setSelectedCompetitionId("");
       }
 
       setLoading(false);
@@ -80,11 +93,12 @@ export default function Anmalan() {
     (async () => {
       setMessage(null);
       setScoutGroups([]);
-      setSelectedScoutGroupId("");
 
-      if (!selectedCompetitionId) return;
+      if (!selectedCompetitionId) {
+        setSelectedScoutGroupId("");
+        return;
+      }
 
-      // ⚠️ Antagande: tabellen heter "scout_groups" och har (id, name, competition_id)
       const { data, error } = await supabase
         .from("scout_groups")
         .select("id,name,competition_id")
@@ -92,30 +106,34 @@ export default function Anmalan() {
         .order("name", { ascending: true });
 
       if (error) {
-        console.error(error);
-        setMessage("Kunde inte hämta kårer för vald tävling.");
+        console.error("Fetch scout_groups error:", error);
+        setSelectedScoutGroupId("");
+        setMessage(`Kunde inte hämta kårer för vald tävling. (${formatSupabaseError(error)})`);
         return;
       }
 
-      const groups = ((data ?? []) as ScoutGroup[]);
+      const groups = (data ?? []) as ScoutGroup[];
       setScoutGroups(groups);
 
-      // Auto-select if only one
-      if (groups.length === 1) {
-        setSelectedScoutGroupId(groups[0].id);
-      }
+      // Behåll tidigare vald kår om den finns i nya listan
+      setSelectedScoutGroupId((prev) => {
+        if (prev && groups.some((g) => g.id === prev)) return prev;
+        if (groups.length === 1) return groups[0].id; // auto-välj om exakt 1
+        return ""; // annars tvinga användaren välja
+      });
     })();
   }, [selectedCompetitionId]);
 
   const disabled = useMemo(() => {
     return (
+      submitting ||
       !selectedCompetitionId ||
       !patrolName.trim() ||
       !selectedScoutGroupId ||
       !contactName.trim() ||
       !contactEmail.trim()
     );
-  }, [selectedCompetitionId, patrolName, selectedScoutGroupId, contactName, contactEmail]);
+  }, [submitting, selectedCompetitionId, patrolName, selectedScoutGroupId, contactName, contactEmail]);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -125,7 +143,6 @@ export default function Anmalan() {
       setMessage("Välj en tävling.");
       return;
     }
-
     if (!selectedScoutGroupId) {
       setMessage("Välj en kår.");
       return;
@@ -133,25 +150,34 @@ export default function Anmalan() {
 
     setSubmitting(true);
 
-    // OBS: justera kolumnnamn så de matchar din tabell patrol_registrations.
+    // OBS: Justera kolumnnamn här om din tabell skiljer sig.
     const payload = {
       competition_id: selectedCompetitionId,
-      // om din tabell använder scout_group_id (vanligt), annars byt till corps_name eller liknande
       scout_group_id: selectedScoutGroupId,
-
       patrol_name: patrolName.trim(),
-      scout_section: section, // om kolumnen heter "section" byt här
+      scout_section: section,
       contact_name: contactName.trim(),
       contact_email: contactEmail.trim(),
-
-      status: "pending", // om du har status-kolumn, annars ta bort
+      status: "pending",
     };
 
-    const { error } = await supabase.from("patrol_registrations").insert(payload);
+    const { data, error } = await supabase
+      .from("patrol_registrations")
+      .insert(payload)
+      .select("id"); // select => bra för att se om RLS stoppar
 
     if (error) {
-      console.error(error);
-      setMessage("Något gick fel när anmälan skulle skickas. Försök igen.");
+      console.error("Insert patrol_registrations error:", error, { payload });
+      setMessage(`Något gick fel när anmälan skulle skickas. (${formatSupabaseError(error)})`);
+      setSubmitting(false);
+      return;
+    }
+
+    // Extra säkerhet om insert inte returnerade något
+    if (!data || data.length === 0) {
+      setMessage(
+        "Anmälan skickades inte (ingen rad returnerades). Kontrollera RLS-policy på patrol_registrations."
+      );
       setSubmitting(false);
       return;
     }
@@ -161,8 +187,6 @@ export default function Anmalan() {
     setContactName("");
     setContactEmail("");
     setSection("sparare");
-
-    // behåll vald tävling/kår så man kan skicka flera
     setSubmitting(false);
   };
 
@@ -208,7 +232,8 @@ export default function Anmalan() {
         </div>
       ) : (
         <p className="mt-2">
-          Anmäl patrull till: <span className="font-medium">{selectedCompetition?.name}</span>
+          Anmäl patrull till:{" "}
+          <span className="font-medium">{selectedCompetition?.name}</span>
         </p>
       )}
 
@@ -226,12 +251,12 @@ export default function Anmalan() {
             onChange={(e) => setSelectedScoutGroupId(e.target.value)}
             disabled={!selectedCompetitionId || scoutGroups.length === 0}
           >
-            <option value="" disabled>
-              {selectedCompetitionId
-                ? scoutGroups.length > 0
+            <option value="">
+              {!selectedCompetitionId
+                ? "Välj tävling först"
+                : scoutGroups.length > 0
                   ? "Välj kår"
-                  : "Inga kårer kopplade till tävlingen"
-                : "Välj tävling först"}
+                  : "Inga kårer kopplade till tävlingen"}
             </option>
 
             {scoutGroups.map((g) => (
@@ -270,7 +295,7 @@ export default function Anmalan() {
           />
         </div>
 
-        <Button type="submit" disabled={disabled || submitting}>
+        <Button type="submit" disabled={disabled}>
           {submitting ? "Skickar…" : "Skicka anmälan"}
         </Button>
 
