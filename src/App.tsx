@@ -19,7 +19,10 @@ import Admin from "./pages/Admin";
 import NotFound from "./pages/NotFound";
 import ResetPassword from "./pages/ResetPassword";
 import VerifyEmail from "./pages/VerifyEmail";
+// Behåll eventuell befintlig PatrolRegistration om du vill ha både intern och publik varianter
 import PatrolRegistration from "./pages/PatrolRegistration";
+// Den nya publika anmälningssidan (lägg till filen src/pages/Anmalan.tsx)
+import Anmalan from "@/pages/Anmalan";
 
 const queryClient = new QueryClient();
 
@@ -40,6 +43,7 @@ const App = () => (
               <Route path="/login" element={<Login />} />
               <Route path="/reset-password" element={<ResetPassword />} />
               <Route path="/verify-email" element={<VerifyEmail />} />
+
               <Route
                 path="/"
                 element={
@@ -50,6 +54,7 @@ const App = () => (
                   </ProtectedRoute>
                 }
               />
+
               <Route
                 path="/competitions"
                 element={
@@ -60,6 +65,7 @@ const App = () => (
                   </ProtectedRoute>
                 }
               />
+
               <Route
                 path="/stations"
                 element={
@@ -70,6 +76,7 @@ const App = () => (
                   </ProtectedRoute>
                 }
               />
+
               <Route
                 path="/patrols"
                 element={
@@ -80,6 +87,7 @@ const App = () => (
                   </ProtectedRoute>
                 }
               />
+
               <Route
                 path="/scout-groups"
                 element={
@@ -90,6 +98,7 @@ const App = () => (
                   </ProtectedRoute>
                 }
               />
+
               <Route
                 path="/scoring"
                 element={
@@ -100,10 +109,25 @@ const App = () => (
                   </ProtectedRoute>
                 }
               />
+
               {/* Scoreboard is public - anyone with the link can view */}
               <Route path="/scoreboard" element={<ScoreboardWrapper />} />
-              {/* Public patrol registration */}
-              <Route path="/anmalan" element={<PatrolRegistration />} />
+
+              {/* Public patrol registration (ny publikt tillgänglig sida) */}
+              <Route path="/anmalan" element={<Anmalan />} />
+
+              {/* Behåll intern sida för patrol registration om ni behöver den */}
+              <Route
+                path="/patrol-registration"
+                element={
+                  <ProtectedRoute requireAdmin>
+                    <AppLayout>
+                      <PatrolRegistration />
+                    </AppLayout>
+                  </ProtectedRoute>
+                }
+              />
+
               <Route
                 path="/admin"
                 element={
@@ -114,6 +138,7 @@ const App = () => (
                   </ProtectedRoute>
                 }
               />
+
               <Route path="*" element={<NotFound />} />
             </Routes>
           </BrowserRouter>
