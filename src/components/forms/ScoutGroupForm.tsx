@@ -1,8 +1,8 @@
-import { useState } from 'react';
-import { useCompetition } from '@/contexts/CompetitionContext';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { useState } from "react";
+import { useCompetition } from "@/contexts/CompetitionContext";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Dialog,
   DialogContent,
@@ -11,16 +11,16 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-} from '@/components/ui/dialog';
+} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select';
-import { Plus, Building2, Download, Save, Trash2 } from 'lucide-react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+} from "@/components/ui/select";
+import { Plus, Building2, Download, Save, Trash2, Loader2 } from "lucide-react";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
   TableBody,
@@ -28,7 +28,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table';
+} from "@/components/ui/table";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -39,7 +39,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   AlertDialogTrigger,
-} from '@/components/ui/alert-dialog';
+} from "@/components/ui/alert-dialog";
+import { useToast } from "@/hooks/use-toast";
 
 interface ScoutGroupFormProps {
   trigger?: React.ReactNode;
@@ -52,25 +53,45 @@ interface ScoutGroupFormProps {
 
 export function ScoutGroupForm({ trigger, group, onSuccess }: ScoutGroupFormProps) {
   const { addScoutGroup, updateScoutGroup } = useCompetition();
+  const { toast } = useToast();
+
   const [open, setOpen] = useState(false);
-  const [name, setName] = useState(group?.name ?? '');
+  const [name, setName] = useState(group?.name ?? "");
+  const [saving, setSaving] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (group) {
-      updateScoutGroup(group.id, name);
-    } else {
-      addScoutGroup(name);
-    }
 
-    setOpen(false);
-    setName('');
-    onSuccess?.();
+    const trimmed = name.trim();
+    if (!trimmed) return;
+
+    setSaving(true);
+    try {
+      if (group) {
+        await updateScoutGroup(group.id, trimmed);
+        toast({ title: "Sparat", description: "Kårens namn uppdaterades." });
+      } else {
+        await addScoutGroup(trimmed);
+        toast({ title: "Skapad", description: "Kåren lades till." });
+      }
+
+      setOpen(false);
+      setName("");
+      onSuccess?.();
+    } catch (err: any) {
+      console.error(err);
+      toast({
+        title: "Något gick fel",
+        description: err?.message ?? "Kunde inte spara kår.",
+        variant: "destructive",
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) setName(group?.name ?? ""); }}>
       <DialogTrigger asChild>
         {trigger ?? (
           <Button>
@@ -82,16 +103,12 @@ export function ScoutGroupForm({ trigger, group, onSuccess }: ScoutGroupFormProp
       <DialogContent>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>
-              {group ? 'Redigera kår' : 'Ny kår'}
-            </DialogTitle>
+            <DialogTitle>{group ? "Redigera kår" : "Ny kår"}</DialogTitle>
             <DialogDescription>
-              {group 
-                ? 'Uppdatera kårens namn.'
-                : 'Lägg till en ny kår till tävlingen.'}
+              {group ? "Uppdatera kårens namn." : "Lägg till en ny kår till tävlingen."}
             </DialogDescription>
           </DialogHeader>
-          
+
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
               <Label htmlFor="name">Kårnamn</Label>
@@ -101,16 +118,18 @@ export function ScoutGroupForm({ trigger, group, onSuccess }: ScoutGroupFormProp
                 onChange={(e) => setName(e.target.value)}
                 placeholder="T.ex. Örnsköldsviks scoutkår"
                 required
+                disabled={saving}
               />
             </div>
           </div>
-          
+
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+            <Button type="button" variant="outline" onClick={() => setOpen(false)} disabled={saving}>
               Avbryt
             </Button>
-            <Button type="submit">
-              {group ? 'Spara' : 'Skapa kår'}
+            <Button type="submit" disabled={saving}>
+              {saving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              {group ? "Spara" : "Skapa kår"}
             </Button>
           </DialogFooter>
         </form>
@@ -120,38 +139,90 @@ export function ScoutGroupForm({ trigger, group, onSuccess }: ScoutGroupFormProp
 }
 
 export function ScoutGroupTemplateManager() {
-  const { 
-    scoutGroups, 
-    scoutGroupTemplates, 
-    saveCurrentGroupsAsTemplate, 
+  const {
+    scoutGroups,
+    scoutGroupTemplates,
+    saveCurrentGroupsAsTemplate,
     importScoutGroupsFromTemplate,
-    deleteScoutGroupTemplate 
+    deleteScoutGroupTemplate,
   } = useCompetition();
-  
+
+  const { toast } = useToast();
+
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
-  const [templateName, setTemplateName] = useState('');
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
 
-  const handleSaveTemplate = (e: React.FormEvent) => {
+  const [templateName, setTemplateName] = useState("");
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
+
+  const [savingTemplate, setSavingTemplate] = useState(false);
+  const [importingTemplate, setImportingTemplate] = useState(false);
+  const [deletingTemplateId, setDeletingTemplateId] = useState<string | null>(null);
+
+  const handleSaveTemplate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (templateName.trim() && scoutGroups.length > 0) {
-      saveCurrentGroupsAsTemplate(templateName);
-      setTemplateName('');
+
+    const trimmed = templateName.trim();
+    if (!trimmed || scoutGroups.length === 0) return;
+
+    setSavingTemplate(true);
+    try {
+      await saveCurrentGroupsAsTemplate(trimmed);
+      toast({ title: "Mall sparad", description: `"${trimmed}" sparades i databasen.` });
+      setTemplateName("");
       setSaveDialogOpen(false);
+    } catch (err: any) {
+      console.error(err);
+      toast({
+        title: "Kunde inte spara mall",
+        description: err?.message ?? "Försök igen.",
+        variant: "destructive",
+      });
+    } finally {
+      setSavingTemplate(false);
     }
   };
 
-  const handleImportTemplate = () => {
-    if (selectedTemplateId) {
-      importScoutGroupsFromTemplate(selectedTemplateId);
-      setSelectedTemplateId('');
+  const handleImportTemplate = async () => {
+    if (!selectedTemplateId) return;
+
+    setImportingTemplate(true);
+    try {
+      await importScoutGroupsFromTemplate(selectedTemplateId);
+      toast({ title: "Importerad", description: "Kårer importerades från mallen." });
+      setSelectedTemplateId("");
       setImportDialogOpen(false);
+    } catch (err: any) {
+      console.error(err);
+      toast({
+        title: "Kunde inte importera",
+        description: err?.message ?? "Försök igen.",
+        variant: "destructive",
+      });
+    } finally {
+      setImportingTemplate(false);
+    }
+  };
+
+  const handleDeleteTemplate = async (id: string) => {
+    setDeletingTemplateId(id);
+    try {
+      await deleteScoutGroupTemplate(id);
+      toast({ title: "Borttagen", description: "Mallen togs bort." });
+    } catch (err: any) {
+      console.error(err);
+      toast({
+        title: "Kunde inte ta bort mall",
+        description: err?.message ?? "Försök igen.",
+        variant: "destructive",
+      });
+    } finally {
+      setDeletingTemplateId(null);
     }
   };
 
   return (
-    <div className="flex gap-2">
+    <div className="flex gap-2 flex-wrap">
       {/* Save as template button */}
       <Dialog open={saveDialogOpen} onOpenChange={setSaveDialogOpen}>
         <DialogTrigger asChild>
@@ -168,7 +239,7 @@ export function ScoutGroupTemplateManager() {
                 Spara nuvarande kårer ({scoutGroups.length} st) som en mall för att enkelt importera dem till andra tävlingar.
               </DialogDescription>
             </DialogHeader>
-            
+
             <div className="grid gap-4 py-4">
               <div className="grid gap-2">
                 <Label htmlFor="templateName">Mallnamn</Label>
@@ -178,23 +249,26 @@ export function ScoutGroupTemplateManager() {
                   onChange={(e) => setTemplateName(e.target.value)}
                   placeholder="T.ex. Regionkårer 2024"
                   required
+                  disabled={savingTemplate}
                 />
               </div>
+
               <div className="text-sm text-muted-foreground">
                 <p className="font-medium mb-1">Kårer som sparas:</p>
                 <ul className="list-disc list-inside">
-                  {scoutGroups.map(g => (
+                  {scoutGroups.map((g) => (
                     <li key={g.id}>{g.name}</li>
                   ))}
                 </ul>
               </div>
             </div>
-            
+
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setSaveDialogOpen(false)}>
+              <Button type="button" variant="outline" onClick={() => setSaveDialogOpen(false)} disabled={savingTemplate}>
                 Avbryt
               </Button>
-              <Button type="submit">
+              <Button type="submit" disabled={savingTemplate}>
+                {savingTemplate && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                 Spara mall
               </Button>
             </DialogFooter>
@@ -217,7 +291,7 @@ export function ScoutGroupTemplateManager() {
               Välj en mall för att importera kårer till denna tävling. Kårer som redan finns kommer inte att dupliceras.
             </DialogDescription>
           </DialogHeader>
-          
+
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
               <Label htmlFor="template">Välj mall</Label>
@@ -226,7 +300,7 @@ export function ScoutGroupTemplateManager() {
                   <SelectValue placeholder="Välj en mall" />
                 </SelectTrigger>
                 <SelectContent>
-                  {scoutGroupTemplates.map(template => (
+                  {scoutGroupTemplates.map((template) => (
                     <SelectItem key={template.id} value={template.id}>
                       {template.name} ({template.groups.length} kårer)
                     </SelectItem>
@@ -234,26 +308,73 @@ export function ScoutGroupTemplateManager() {
                 </SelectContent>
               </Select>
             </div>
-            
+
             {selectedTemplateId && (
               <div className="text-sm text-muted-foreground">
                 <p className="font-medium mb-1">Kårer i mallen:</p>
                 <ul className="list-disc list-inside">
                   {scoutGroupTemplates
-                    .find(t => t.id === selectedTemplateId)
+                    .find((t) => t.id === selectedTemplateId)
                     ?.groups.map((name, i) => (
                       <li key={i}>{name}</li>
                     ))}
                 </ul>
               </div>
             )}
+
+            {/* Bonus: lista mallar + ta bort */}
+            {scoutGroupTemplates.length > 0 && (
+              <div className="pt-2">
+                <p className="text-sm font-medium mb-2">Hantera mallar</p>
+                <div className="space-y-2">
+                  {scoutGroupTemplates.map((t) => (
+                    <div key={t.id} className="flex items-center justify-between gap-2 rounded-md border p-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{t.name}</p>
+                        <p className="text-xs text-muted-foreground">{t.groups.length} kårer</p>
+                      </div>
+
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button variant="ghost" size="icon" disabled={deletingTemplateId === t.id}>
+                            {deletingTemplateId === t.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-4 w-4 text-destructive" />
+                            )}
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Ta bort mall?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              Detta tar bort mallen "{t.name}". Det går inte att ångra.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Avbryt</AlertDialogCancel>
+                            <AlertDialogAction
+                              onClick={() => handleDeleteTemplate(t.id)}
+                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                            >
+                              Ta bort
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
-          
+
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setImportDialogOpen(false)}>
+            <Button type="button" variant="outline" onClick={() => setImportDialogOpen(false)} disabled={importingTemplate}>
               Avbryt
             </Button>
-            <Button onClick={handleImportTemplate} disabled={!selectedTemplateId}>
+            <Button onClick={handleImportTemplate} disabled={!selectedTemplateId || importingTemplate}>
+              {importingTemplate && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Importera
             </Button>
           </DialogFooter>
@@ -265,9 +386,28 @@ export function ScoutGroupTemplateManager() {
 
 export function ScoutGroupList() {
   const { scoutGroups, deleteScoutGroup, patrols } = useCompetition();
+  const { toast } = useToast();
+  const [deletingGroupId, setDeletingGroupId] = useState<string | null>(null);
 
   const getPatrolCount = (groupId: string) => {
-    return patrols.filter(p => p.scoutGroupId === groupId).length;
+    return patrols.filter((p) => p.scoutGroupId === groupId).length;
+  };
+
+  const handleDeleteGroup = async (groupId: string) => {
+    setDeletingGroupId(groupId);
+    try {
+      await deleteScoutGroup(groupId);
+      toast({ title: "Borttagen", description: "Kåren togs bort." });
+    } catch (err: any) {
+      console.error(err);
+      toast({
+        title: "Kunde inte ta bort kår",
+        description: err?.message ?? "Försök igen.",
+        variant: "destructive",
+      });
+    } finally {
+      setDeletingGroupId(null);
+    }
   };
 
   if (scoutGroups.length === 0) {
@@ -295,11 +435,14 @@ export function ScoutGroupList() {
           <Building2 className="h-5 w-5" />
           Kårer ({scoutGroups.length})
         </CardTitle>
-        <CardDescription>
-          Hantera kårer för denna tävling
-        </CardDescription>
+        <CardDescription>Hantera kårer för denna tävling</CardDescription>
       </CardHeader>
       <CardContent>
+        <div className="flex items-center justify-between gap-2 mb-4">
+          <ScoutGroupForm />
+          <ScoutGroupTemplateManager />
+        </div>
+
         <Table>
           <TableHeader>
             <TableRow>
@@ -309,7 +452,7 @@ export function ScoutGroupList() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {scoutGroups.map(group => (
+            {scoutGroups.map((group) => (
               <TableRow key={group.id}>
                 <TableCell className="font-medium">{group.name}</TableCell>
                 <TableCell className="text-right">{getPatrolCount(group.id)}</TableCell>
@@ -325,22 +468,25 @@ export function ScoutGroupList() {
                     />
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
-                        <Button variant="ghost" size="icon">
-                          <Trash2 className="h-4 w-4 text-destructive" />
+                        <Button variant="ghost" size="icon" disabled={deletingGroupId === group.id}>
+                          {deletingGroupId === group.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          )}
                         </Button>
                       </AlertDialogTrigger>
                       <AlertDialogContent>
                         <AlertDialogHeader>
                           <AlertDialogTitle>Ta bort kår?</AlertDialogTitle>
                           <AlertDialogDescription>
-                            Detta kommer att ta bort kåren "{group.name}". 
-                            Patruller som tillhör kåren kommer att bli utan kårtillhörighet.
+                            Detta kommer att ta bort kåren "{group.name}". Patruller som tillhör kåren kommer att bli utan kårtillhörighet.
                           </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
                           <AlertDialogCancel>Avbryt</AlertDialogCancel>
                           <AlertDialogAction
-                            onClick={() => deleteScoutGroup(group.id)}
+                            onClick={() => handleDeleteGroup(group.id)}
                             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                           >
                             Ta bort
