@@ -59,11 +59,10 @@ export default function Scoring() {
     }
   }, [stations, selectedStation]);
 
-  // Safe wrapper runt getScore så vi aldrig får ReferenceError
+  // ✅ Robust: ta en lokal referens till funktionen (undviker "getScore is not defined" i bundlen)
+  const getScoreFn = competition.getScore;
   const safeGetScore = (patrolId: string, stationId: string) =>
-    typeof competition.getScore === "function"
-      ? competition.getScore(patrolId, stationId)
-      : 0;
+    typeof getScoreFn === "function" ? getScoreFn(patrolId, stationId) : 0;
 
   const filteredStations = useMemo(() => {
     return selectedSections.length === 0
