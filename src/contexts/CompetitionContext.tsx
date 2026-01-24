@@ -720,15 +720,15 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   );
 
   const persistScore = useCallback(
-    async (patrolId: string, stationId: string, score: number) => {
-      if (!selectedId) return;
+  async (patrolId: string, stationId: string, score: number) => {
+    if (!selectedId) return;
 
-      const key = scoreKey(patrolId, stationId);
-      setScoreSaveState((prev) => new Map(prev).set(key, "saving"));
+    const key = scoreKey(patrolId, stationId);
+    setScoreSaveState((prev) => new Map(prev).set(key, "saving"));
 
-      // ✅ IMPORTANT:
-      // Do NOT chain .select()/.single() after upsert with onConflict.
-      const { error } = await supabase.from("scores").upsert(
+    const { data, error } = await supabase
+      .from("scores")
+      .upsert(
         {
           competition_id: selectedId,
           patrol_id: patrolId,
@@ -736,15 +736,48 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
           score,
           updated_at: new Date().toISOString(),
         },
-        { onConflict: "competition_id,patrol_id,station_id" }
-      );
+        {
+          onConflict: "competition_id,patrol_id,station_id",
+        }
+      )
+      .select("id,competition_id,patrol_id,station_id,score,updated_at")
+      .single();
 
-      if (error) {
-        console.error("Failed to save score:", error);
-        setScoreSaveState((prev) => new Map(prev).set(key, "error"));
-        setPendingRetry((prev) => new Map(prev).set(key, { patrolId, stationId, score }));
-        return;
-      }
+    if (error || !data) {
+      console.error("Failed to save score:", error);
+      setScoreSaveState((prev) => new Map(prev).set(key, "error"));
+      setPendingRetry((prev) =>
+        new Map(prev).set(key, { patrolId, stationId, score })
+      );
+      return;
+    }
+
+    const saved = mapDbScore(data);
+
+    setCompetitions((prev) =>
+      prev.map((c) =>
+        c.id === selectedId
+          ? {
+              ...c,
+              scores: [
+                ...c.scores.filter(
+                  (s) =>
+                    !(
+                      s.patrolId === patrolId &&
+                      s.stationId === stationId
+                    )
+                ),
+                saved,
+              ],
+            }
+          : c
+      )
+    );
+
+    setScoreSaveState((prev) => new Map(prev).set(key, "saved"));
+  },
+  [selectedId]
+);
 
       // ✅ Update local state without relying on RETURNING
       setCompetitions((prev) =>
