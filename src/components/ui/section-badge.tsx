@@ -8,7 +8,7 @@ interface SectionBadgeProps {
 }
 
 const sectionColors: Record<ScoutSection, string> = {
-  sparare: 'bg-[hsl(109,60%,41%))] text-white',
+  sparare: 'bg-[hsl(109,60%,41%)] text-white',
   upptackare: 'bg-[hsl(195,100%,44%)] text-white',
   aventyrare: 'bg-[hsl(21,85%,49%)] text-white',
   utmanare: 'bg-[hsl(334,100%,43%)] text-white',
