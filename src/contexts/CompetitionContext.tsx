@@ -150,7 +150,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   const [scoreSaveState, setScoreSaveState] = useState<Record<string, SaveState>>({});
 
   const scoreKey = useCallback(
-    (patrolId: string, stationId: string) => ${selectedId ?? "no-comp"}:${patrolId}:${stationId},
+    (patrolId: string, stationId: string) => `${selectedId ?? "no-comp"}:${patrolId}:${stationId}`,
     [selectedId]
   );
 
@@ -684,7 +684,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     async (patrolId: string, stationId: string, score: number) => {
       if (!selectedId) return;
 
-      const key = ${selectedId}:${patrolId}:${stationId};
+      const key = `${selectedId}:${patrolId}:${stationId}`;
 
       // 1) optimistic update in local state
       updateCurrentCompetition((comp) => {
@@ -842,4 +842,4 @@ export function useCompetition() {
     throw new Error("useCompetition must be used within a CompetitionProvider");
   }
   return context;
-} 
+}
