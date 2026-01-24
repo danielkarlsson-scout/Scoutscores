@@ -1,336 +1,304 @@
-import React, { createContext, useContext, useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useCompetition } from "@/contexts/CompetitionContext";
+import { useAuth } from "@/contexts/AuthContext";
+import { SectionBadge } from "@/components/ui/section-badge";
+import { ScoreInput } from "@/components/ui/score-input";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  Competition,
-  Station,
-  Patrol,
-  Score,
-  ScoutSection,
-  PatrolWithScore,
-  CompetitionStatus,
-  ScoutGroup,
-  ScoutGroupTemplate,
-} from "@/types/competition";
-import { supabase } from "@/integrations/supabase/client";
+  ClipboardList,
+  Flag,
+  Filter,
+  X,
+  Shield,
+  Lock,
+  Loader2,
+  CheckCircle2,
+  AlertTriangle,
+  RotateCcw,
+} from "lucide-react";
+import { ScoutSection, SCOUT_SECTIONS } from "@/types/competition";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
-type ScoreSaveState = "idle" | "saving" | "saved" | "error";
+export default function Scoring() {
+  const { stations, patrols, setScore, getScore, getScoreSaveState, retrySaveScore } = useCompetition();
+  const { isAdmin, isScorer, canScoreSection } = useAuth();
 
-interface CompetitionContextType {
-  competitions: Competition[];
-  activeCompetitions: Competition[];
-  archivedCompetitions: Competition[];
+  const [selectedStation, setSelectedStation] = useState<string>("");
+  const [selectedSections, setSelectedSections] = useState<ScoutSection[]>([]);
 
-  competition: Competition | null;
-  stations: Station[];
-  patrols: Patrol[];
-  scores: Score[];
-  scoutGroups: ScoutGroup[];
+  const canScore = isAdmin || isScorer;
 
-  createCompetition: (data: { name: string; date: string }) => Promise<Competition>;
-  selectCompetition: (id: string) => void;
-  closeCompetition: (id: string) => void;
-  reopenCompetition: (id: string) => void;
-  deleteCompetition: (id: string) => void;
-  updateCompetitionById: (id: string, updates: Partial<Competition>) => void;
+  useEffect(() => {
+    if (!stations || stations.length === 0) {
+      setSelectedStation("");
+      return;
+    }
+    const stillExists = selectedStation && stations.some((s) => s.id === selectedStation);
+    if (!stillExists) setSelectedStation(stations[0].id);
+  }, [stations, selectedStation]);
 
-  addStation: (station: Omit<Station, "id" | "createdAt">) => Promise<void>;
-  updateStation: (id: string, updates: Partial<Station>) => Promise<void>;
-  deleteStation: (id: string) => Promise<void>;
+  const toggleSection = (section: ScoutSection) => {
+    setSelectedSections((prev) => (prev.includes(section) ? prev.filter((s) => s !== section) : [...prev, section]));
+  };
 
-  addPatrol: (patrol: Omit<Patrol, "id" | "createdAt">) => Promise<void>;
-  updatePatrol: (id: string, updates: Partial<Patrol>) => Promise<void>;
-  deletePatrol: (id: string) => Promise<void>;
+  const clearFilters = () => setSelectedSections([]);
 
-  addScoutGroup: (name: string) => Promise<void>;
-  updateScoutGroup: (id: string, name: string) => Promise<void>;
-  deleteScoutGroup: (id: string) => Promise<void>;
-  importScoutGroupsFromTemplate: (templateId: string) => Promise<void>;
+  const filteredStations = useMemo(() => {
+    if (selectedSections.length === 0) return stations;
+    return stations.filter((station) => {
+      if (!station.allowedSections || station.allowedSections.length === 0) return true;
+      return station.allowedSections.some((s) => selectedSections.includes(s));
+    });
+  }, [stations, selectedSections]);
 
-  scoutGroupTemplates: ScoutGroupTemplate[];
-  createScoutGroupTemplate: (name: string, groups: string[]) => Promise<void>;
-  deleteScoutGroupTemplate: (id: string) => Promise<void>;
-  saveCurrentGroupsAsTemplate: (templateName: string) => Promise<void>;
+  const currentStation = useMemo(() => stations.find((s) => s.id === selectedStation), [stations, selectedStation]);
 
-  // ✅ Scores (DB)
-  setScore: (patrolId: string, stationId: string, score: number) => Promise<void>;
-  getScore: (patrolId: string, stationId: string) => number;
-  getScoreSaveState: (patrolId: string, stationId: string) => ScoreSaveState;
-  retrySaveScore: (patrolId: string, stationId: string) => Promise<void>;
-
-  getPatrolsWithScores: (section?: ScoutSection) => PatrolWithScore[];
-  getStationScores: (stationId: string) => Array<{ patrol: Patrol; score: number }>;
-  getScoutGroupName: (groupId: string) => string | undefined;
-
-  updateCompetition: (updates: Partial<Competition>) => void;
-}
-
-const CompetitionContext = createContext<CompetitionContextType | undefined>(undefined);
-
-const scoreKey = (competitionId: string, patrolId: string, stationId: string) =>
-  `${competitionId}::${patrolId}::${stationId}`;
-
-export function CompetitionProvider({ children }: { children: React.ReactNode }) {
-  // ------------------------------------------------------------
-  // OBS: Jag lämnar dina befintliga DB-loads för competitions/templates/stations/patrols som de är.
-  // Här visar jag bara den delen som behövs för scores + state.
-  // ------------------------------------------------------------
-
-  const [competitions, setCompetitions] = useState<Competition[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-
-  // Derived state
-  const competition = useMemo(() => competitions.find((c) => c.id === selectedId) ?? null, [competitions, selectedId]);
-  const activeCompetitions = useMemo(() => competitions.filter((c) => c.status === "active"), [competitions]);
-  const archivedCompetitions = useMemo(() => competitions.filter((c) => c.status === "closed"), [competitions]);
-
-  const stations = competition?.stations ?? [];
-  const patrols = competition?.patrols ?? [];
-  const scores = competition?.scores ?? [];
-  const scoutGroups = competition?.scoutGroups ?? [];
-  const scoutGroupTemplates = competition?.scoutGroupTemplates ?? ([] as any); // om du har dem i context, annars byt till ditt riktiga state
-
-  // ----------------------------------------------------------------
-  // ✅ Score save state + last attempted value (för retry)
-  // ----------------------------------------------------------------
-  const [scoreSaveStates, setScoreSaveStates] = useState<Record<string, ScoreSaveState>>({});
-  const [scoreLastAttempt, setScoreLastAttempt] = useState<Record<string, number>>({});
-
-  const getScoreSaveState = useCallback(
-    (patrolId: string, stationId: string): ScoreSaveState => {
-      if (!selectedId) return "idle";
-      const k = scoreKey(selectedId, patrolId, stationId);
-      return scoreSaveStates[k] ?? "idle";
-    },
-    [scoreSaveStates, selectedId]
-  );
-
-  // ✅ Get local cached score value (from state)
-  const getScore = useCallback(
-    (patrolId: string, stationId: string) => {
-      const scoreRecord = scores.find((s) => s.patrolId === patrolId && s.stationId === stationId);
-      return scoreRecord?.score ?? 0;
-    },
-    [scores]
-  );
-
-  // ✅ Upsert score till DB + uppdatera lokal state
-  const setScore = useCallback(
-    async (patrolId: string, stationId: string, scoreValue: number) => {
-      if (!selectedId) return;
-
-      const k = scoreKey(selectedId, patrolId, stationId);
-
-      // Optimistisk UI: uppdatera lokalt direkt
-      setCompetitions((prev) =>
-        prev.map((c) => {
-          if (c.id !== selectedId) return c;
-
-          const existingIndex = (c.scores ?? []).findIndex(
-            (s) => s.patrolId === patrolId && s.stationId === stationId
-          );
-
-          const newScore: Score = {
-            id: existingIndex >= 0 ? c.scores[existingIndex].id : crypto.randomUUID(),
-            patrolId,
-            stationId,
-            score: scoreValue,
-            updatedAt: new Date().toISOString(),
-          };
-
-          if (existingIndex >= 0) {
-            const nextScores = [...c.scores];
-            nextScores[existingIndex] = newScore;
-            return { ...c, scores: nextScores };
-          }
-
-          return { ...c, scores: [...(c.scores ?? []), newScore] };
-        })
-      );
-
-      setScoreLastAttempt((prev) => ({ ...prev, [k]: scoreValue }));
-      setScoreSaveStates((prev) => ({ ...prev, [k]: "saving" }));
-
-      // 🔥 DB upsert: använd snake_case som din tabell har
-      const payload = {
-        competition_id: selectedId,
-        patrol_id: patrolId,
-        station_id: stationId,
-        score: scoreValue,
-        updated_at: new Date().toISOString(),
-      };
-
-      const { error } = await supabase
-        .from("scores")
-        .upsert(payload, { onConflict: "competition_id,patrol_id,station_id" });
-
-      if (error) {
-        // Detta är din 400: logga detaljer så du ser exakt varför
-        console.error("Failed to save score:", {
-          message: error.message,
-          details: (error as any).details,
-          hint: (error as any).hint,
-          code: (error as any).code,
-          payload,
-        });
-
-        setScoreSaveStates((prev) => ({ ...prev, [k]: "error" }));
-        return;
+  const filteredPatrols = useMemo(() => {
+    return patrols.filter((patrol) => {
+      if (selectedSections.length > 0 && !selectedSections.includes(patrol.section)) return false;
+      if (currentStation?.allowedSections && currentStation.allowedSections.length > 0) {
+        return currentStation.allowedSections.includes(patrol.section);
       }
+      return true;
+    });
+  }, [patrols, selectedSections, currentStation]);
 
-      // Markera “saved” en stund
-      setScoreSaveStates((prev) => ({ ...prev, [k]: "saved" }));
-      window.setTimeout(() => {
-        setScoreSaveStates((prev) => {
-          // sänk bara om den fortfarande är saved (om user ändrade igen -> saving/error)
-          if (prev[k] !== "saved") return prev;
-          const copy = { ...prev };
-          copy[k] = "idle";
-          return copy;
-        });
-      }, 1200);
-    },
-    [selectedId]
-  );
+  const renderSaveStatus = (patrolId: string, stationId: string) => {
+    const state = getScoreSaveState(patrolId, stationId);
 
-  // ✅ Retry: försök spara senaste värdet igen
-  const retrySaveScore = useCallback(
-    async (patrolId: string, stationId: string) => {
-      if (!selectedId) return;
-      const k = scoreKey(selectedId, patrolId, stationId);
+    if (state === "saving") {
+      return (
+        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Sparar…
+        </span>
+      );
+    }
 
-      const last = scoreLastAttempt[k];
-      // fallback: ta nuvarande value om last saknas
-      const current = getScore(patrolId, stationId);
-      const valueToRetry = typeof last === "number" ? last : current;
+    if (state === "saved") {
+      return (
+        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+          <CheckCircle2 className="h-3.5 w-3.5" />
+          Sparad
+        </span>
+      );
+    }
 
-      await setScore(patrolId, stationId, valueToRetry);
-    },
-    [selectedId, scoreLastAttempt, getScore, setScore]
-  );
+    if (state === "error") {
+      return (
+        <span className="inline-flex items-center gap-2 text-xs text-destructive">
+          <span className="inline-flex items-center gap-1">
+            <AlertTriangle className="h-3.5 w-3.5" />
+            Kunde inte spara
+          </span>
 
-  // ------------------------------------------------------------
-  // Resten av dina metoder: lämna som du har (DB för competitions/templates/stations/patrols osv)
-  // ------------------------------------------------------------
+          {/* ✅ Retry direkt */}
+          <button
+            type="button"
+            onClick={() => retrySaveScore(patrolId, stationId)}
+            className="inline-flex items-center gap-1 underline underline-offset-2 hover:no-underline"
+          >
+            <RotateCcw className="h-3.5 w-3.5" />
+            Försök igen
+          </button>
+        </span>
+      );
+    }
 
-  const createCompetition = useCallback(async (data: { name: string; date: string }): Promise<Competition> => {
-    // behåll din befintliga DB-implementation
-    throw new Error("Not implemented here (keep your current DB implementation).");
-  }, []);
+    return null;
+  };
 
-  const selectCompetition = useCallback((id: string) => setSelectedId(id), []);
+  if (!canScore) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Poängregistrering</h1>
+          <p className="text-muted-foreground">Registrera poäng för varje patrull</p>
+        </div>
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12">
+            <Shield className="h-12 w-12 text-muted-foreground mb-4" />
+            <h3 className="text-lg font-semibold mb-2">Ingen behörighet</h3>
+            <p className="text-muted-foreground text-center">
+              Du har inte behörighet att registrera poäng. Kontakta en administratör för att få tillgång.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
-  const closeCompetition = useCallback((_id: string) => {}, []);
-  const reopenCompetition = useCallback((_id: string) => {}, []);
-  const deleteCompetition = useCallback((_id: string) => {}, []);
-  const updateCompetitionById = useCallback((_id: string, _updates: Partial<Competition>) => {}, []);
+  if (stations.length === 0) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Poängregistrering</h1>
+          <p className="text-muted-foreground">Registrera poäng för varje patrull</p>
+        </div>
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12">
+            <Flag className="h-12 w-12 text-muted-foreground mb-4" />
+            <h3 className="text-lg font-semibold mb-2">Inga stationer skapade</h3>
+            <p className="text-muted-foreground text-center">Skapa stationer först för att kunna registrera poäng.</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
-  const addStation = useCallback(async (_station: Omit<Station, "id" | "createdAt">) => {}, []);
-  const updateStation = useCallback(async (_id: string, _updates: Partial<Station>) => {}, []);
-  const deleteStation = useCallback(async (_id: string) => {}, []);
-
-  const addPatrol = useCallback(async (_patrol: Omit<Patrol, "id" | "createdAt">) => {}, []);
-  const updatePatrol = useCallback(async (_id: string, _updates: Partial<Patrol>) => {}, []);
-  const deletePatrol = useCallback(async (_id: string) => {}, []);
-
-  const addScoutGroup = useCallback(async (_name: string) => {}, []);
-  const updateScoutGroup = useCallback(async (_id: string, _name: string) => {}, []);
-  const deleteScoutGroup = useCallback(async (_id: string) => {}, []);
-  const importScoutGroupsFromTemplate = useCallback(async (_templateId: string) => {}, []);
-
-  const createScoutGroupTemplate = useCallback(async (_name: string, _groups: string[]) => {}, []);
-  const deleteScoutGroupTemplate = useCallback(async (_id: string) => {}, []);
-  const saveCurrentGroupsAsTemplate = useCallback(async (_templateName: string) => {}, []);
-
-  const getPatrolsWithScores = useCallback(
-    (section?: ScoutSection): PatrolWithScore[] => {
-      const filteredPatrols = section ? patrols.filter((p) => p.section === section) : patrols;
-
-      const patrolsWithScores: PatrolWithScore[] = filteredPatrols.map((patrol) => {
-        const patrolScores = scores.filter((s) => s.patrolId === patrol.id);
-        const stationScores: Record<string, number> = {};
-        let totalScore = 0;
-
-        patrolScores.forEach((s) => {
-          stationScores[s.stationId] = s.score;
-          totalScore += s.score;
-        });
-
-        return { ...patrol, totalScore, stationScores };
-      });
-
-      patrolsWithScores.sort((a, b) => b.totalScore - a.totalScore);
-      patrolsWithScores.forEach((p, idx) => (p.rank = idx + 1));
-      return patrolsWithScores;
-    },
-    [patrols, scores]
-  );
-
-  const getStationScores = useCallback(
-    (stationId: string) => {
-      return patrols
-        .map((patrol) => {
-          const scoreRecord = scores.find((s) => s.patrolId === patrol.id && s.stationId === stationId);
-          return { patrol, score: scoreRecord?.score ?? 0 };
-        })
-        .sort((a, b) => b.score - a.score);
-    },
-    [patrols, scores]
-  );
-
-  const getScoutGroupName = useCallback(
-    (groupId: string) => scoutGroups.find((g) => g.id === groupId)?.name,
-    [scoutGroups]
-  );
-
-  const updateCompetition = useCallback((_updates: Partial<Competition>) => {}, []);
+  if (patrols.length === 0) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Poängregistrering</h1>
+          <p className="text-muted-foreground">Registrera poäng för varje patrull</p>
+        </div>
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center py-12">
+            <ClipboardList className="h-12 w-12 text-muted-foreground mb-4" />
+            <h3 className="text-lg font-semibold mb-2">Inga patruller skapade</h3>
+            <p className="text-muted-foreground text-center">Skapa patruller först för att kunna registrera poäng.</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
-    <CompetitionContext.Provider
-      value={{
-        competitions,
-        activeCompetitions,
-        archivedCompetitions,
-        competition,
-        stations,
-        patrols,
-        scores,
-        scoutGroups,
-        createCompetition,
-        selectCompetition,
-        closeCompetition,
-        reopenCompetition,
-        deleteCompetition,
-        updateCompetitionById,
-        addStation,
-        updateStation,
-        deleteStation,
-        addPatrol,
-        updatePatrol,
-        deletePatrol,
-        addScoutGroup,
-        updateScoutGroup,
-        deleteScoutGroup,
-        importScoutGroupsFromTemplate,
-        scoutGroupTemplates: (Array.isArray(scoutGroupTemplates) ? scoutGroupTemplates : []) as any,
-        createScoutGroupTemplate,
-        deleteScoutGroupTemplate,
-        saveCurrentGroupsAsTemplate,
-        setScore,
-        getScore,
-        getScoreSaveState,
-        retrySaveScore,
-        getPatrolsWithScores,
-        getStationScores,
-        getScoutGroupName,
-        updateCompetition,
-      }}
-    >
-      {children}
-    </CompetitionContext.Provider>
-  );
-}
+    <div className="space-y-6">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Poängregistrering</h1>
+          <p className="text-muted-foreground">Registrera poäng för varje patrull</p>
+        </div>
 
-export function useCompetition() {
-  const context = useContext(CompetitionContext);
-  if (!context) throw new Error("useCompetition must be used within a CompetitionProvider");
-  return context;
+        <div className="flex flex-col sm:flex-row gap-2">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" className="w-full sm:w-auto justify-start">
+                <Filter className="h-4 w-4 mr-2" />
+                {selectedSections.length === 0 ? "Alla avdelningar" : `${selectedSections.length} valda`}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56 bg-popover">
+              {(Object.keys(SCOUT_SECTIONS) as ScoutSection[]).map((section) => (
+                <DropdownMenuCheckboxItem
+                  key={section}
+                  checked={selectedSections.includes(section)}
+                  onCheckedChange={() => toggleSection(section)}
+                >
+                  {SCOUT_SECTIONS[section].name}
+                </DropdownMenuCheckboxItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <Select value={selectedStation} onValueChange={setSelectedStation}>
+            <SelectTrigger className="w-full sm:w-64">
+              <SelectValue placeholder="Välj station" />
+            </SelectTrigger>
+            <SelectContent>
+              {filteredStations.map((station) => (
+                <SelectItem key={station.id} value={station.id}>
+                  {station.name} (max {station.maxScore}p)
+                  {station.allowedSections && station.allowedSections.length > 0 && (
+                    <span className="text-muted-foreground ml-1">
+                      [{station.allowedSections.map((s) => SCOUT_SECTIONS[s].name).join(", ")}]
+                    </span>
+                  )}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {selectedSections.length > 0 && (
+        <div className="flex flex-wrap gap-2 items-center">
+          <span className="text-sm text-muted-foreground">Filter:</span>
+          {selectedSections.map((section) => (
+            <Badge
+              key={section}
+              variant="secondary"
+              className="gap-1 cursor-pointer hover:bg-destructive/20"
+              onClick={() => toggleSection(section)}
+            >
+              {SCOUT_SECTIONS[section].name}
+              <X className="h-3 w-3" />
+            </Badge>
+          ))}
+          <Button variant="ghost" size="sm" onClick={clearFilters} className="h-6 px-2 text-xs">
+            Rensa alla
+          </Button>
+        </div>
+      )}
+
+      {currentStation && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Flag className="h-5 w-5" />
+              {currentStation.name}
+            </CardTitle>
+            <CardDescription>
+              {currentStation.description || `Max poäng: ${currentStation.maxScore}`}
+              {currentStation.allowedSections && currentStation.allowedSections.length > 0 && (
+                <span className="ml-2">
+                  • Endast: {currentStation.allowedSections.map((s) => SCOUT_SECTIONS[s].name).join(", ")}
+                </span>
+              )}
+              <span className="ml-2">• Visar {filteredPatrols.length} patruller</span>
+            </CardDescription>
+          </CardHeader>
+
+          <CardContent>
+            {filteredPatrols.length === 0 ? (
+              <p className="text-muted-foreground text-center py-6">Inga patruller i valda avdelningar.</p>
+            ) : (
+              <div className="space-y-6">
+                {filteredPatrols.map((patrol) => {
+                  const hasPermission = canScoreSection(patrol.section);
+                  const value = getScore(patrol.id, currentStation.id);
+
+                  return (
+                    <div key={patrol.id} className="flex items-center gap-4 py-2 border-b last:border-0">
+                      {/* ✅ Option 1: låt namnet wrapa istället för truncate */}
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium whitespace-normal break-words leading-snug">
+                          {patrol.name}
+                        </p>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <SectionBadge section={patrol.section} size="sm" />
+                          {hasPermission && renderSaveStatus(patrol.id, currentStation.id)}
+                        </div>
+                      </div>
+
+                      {hasPermission ? (
+                        <ScoreInput
+                          value={value}
+                          maxScore={currentStation.maxScore}
+                          onChange={async (newScore) => {
+                            await setScore(patrol.id, currentStation.id, newScore);
+                          }}
+                        />
+                      ) : (
+                        <div className="flex items-center gap-2 text-muted-foreground">
+                          <Lock className="h-4 w-4" />
+                          <span className="text-sm">{value ?? "-"}</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
 }
