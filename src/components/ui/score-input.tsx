@@ -1,67 +1,144 @@
-import { useState, useEffect } from 'react';
-import { Input } from '@/components/ui/input';
-import { cn } from '@/lib/utils';
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Minus, Plus } from "lucide-react";
 
-interface ScoreInputProps {
+type ScoreInputProps = {
   value: number;
   maxScore: number;
-  onChange: (value: number) => void;
+  onChange: (score: number) => void;
+
+  /** NEW */
   disabled?: boolean;
+
+  /**
+   * NEW: debounce på textinput så du slipper DB-write per tangenttryckning.
+   * Default: 350ms
+   */
+  debounceMs?: number;
+
+  /** NEW: om du vill visa +/- knappar (default true) */
+  showButtons?: boolean;
+
+  /** NEW: min score (default 0) */
+  minScore?: number;
+
   className?: string;
-}
+};
 
-export function ScoreInput({ value, maxScore, onChange, disabled, className }: ScoreInputProps) {
-  const [localValue, setLocalValue] = useState(value.toString());
+const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
 
-  // Sync local state when prop changes (e.g., switching stations)
+export function ScoreInput({
+  value,
+  maxScore,
+  onChange,
+  disabled = false,
+  debounceMs = 350,
+  showButtons = true,
+  minScore = 0,
+  className,
+}: ScoreInputProps) {
+  // local input state så vi kan debounca typing
+  const [draft, setDraft] = useState<string>(String(value ?? 0));
+
+  // håll draft i sync om value ändras utifrån (t.ex. efter DB fetch)
   useEffect(() => {
-    setLocalValue(value.toString());
+    setDraft(String(value ?? 0));
   }, [value]);
-  
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const inputValue = e.target.value;
-    setLocalValue(inputValue);
-    
-    const numValue = parseInt(inputValue, 10);
-    if (!isNaN(numValue) && numValue >= 0 && numValue <= maxScore) {
-      onChange(numValue);
-    }
+
+  const min = useMemo(() => minScore, [minScore]);
+  const max = useMemo(() => maxScore ?? 0, [maxScore]);
+
+  const timerRef = useRef<number | null>(null);
+
+  const commit = (raw: string) => {
+    const parsed = Number(raw);
+    const safe = Number.isFinite(parsed) ? parsed : min;
+    const next = clamp(Math.round(safe), min, max);
+    onChange(next);
   };
 
-  const handleBlur = () => {
-    const numValue = parseInt(localValue, 10);
-    if (isNaN(numValue) || numValue < 0) {
-      setLocalValue('0');
-      onChange(0);
-    } else if (numValue > maxScore) {
-      setLocalValue(maxScore.toString());
-      onChange(maxScore);
-    } else {
-      setLocalValue(numValue.toString());
-    }
+  // Debounce commit när man skriver manuellt
+  useEffect(() => {
+    if (disabled) return;
+
+    // rensa tidigare timer
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+
+    timerRef.current = window.setTimeout(() => {
+      commit(draft);
+    }, debounceMs);
+
+    return () => {
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, debounceMs, disabled]);
+
+  const step = (delta: number) => {
+    if (disabled) return;
+
+    // när man klickar +/- vill vi committa direkt (inte debounce)
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+
+    const current = Number(draft);
+    const safe = Number.isFinite(current) ? current : (value ?? 0);
+    const next = clamp(safe + delta, min, max);
+
+    setDraft(String(next));
+    onChange(next);
   };
 
-  const percentage = (value / maxScore) * 100;
+  const onBlur = () => {
+    // commit direkt på blur för att inte lämna "halv" value
+    if (disabled) return;
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    commit(draft);
+  };
 
   return (
-    <div className={cn('relative', className)}>
+    <div className={`flex items-center gap-2 ${className ?? ""}`}>
+      {showButtons && (
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          onClick={() => step(-1)}
+          disabled={disabled || Number(draft) <= min}
+          aria-label="Minska poäng"
+        >
+          <Minus className="h-4 w-4" />
+        </Button>
+      )}
+
       <Input
-        type="number"
-        min={0}
-        max={maxScore}
-        value={localValue}
-        onChange={handleChange}
-        onBlur={handleBlur}
+        inputMode="numeric"
+        pattern="[0-9]*"
+        value={draft}
+        onChange={(e) => {
+          // Tillåt tomt medan man skriver, men håll det numeriskt
+          const v = e.target.value;
+          if (v === "") return setDraft("");
+          if (/^\d+$/.test(v)) setDraft(v);
+        }}
+        onBlur={onBlur}
         disabled={disabled}
-        className="w-20 text-center pr-8"
+        className="w-20 text-center"
+        aria-label="Poäng"
       />
-      <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
-        /{maxScore}
-      </span>
-      <div 
-        className="absolute bottom-0 left-0 h-1 bg-primary rounded-b-md transition-all"
-        style={{ width: `${percentage}%` }}
-      />
+
+      {showButtons && (
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          onClick={() => step(1)}
+          disabled={disabled || Number(draft) >= max}
+          aria-label="Öka poäng"
+        >
+          <Plus className="h-4 w-4" />
+        </Button>
+      )}
     </div>
   );
 }
