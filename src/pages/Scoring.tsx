@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useCompetition } from "@/contexts/CompetitionContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { SectionBadge } from "@/components/ui/section-badge";
@@ -22,7 +22,6 @@ import {
 } from "lucide-react";
 import { ScoutSection, SCOUT_SECTIONS } from "@/types/competition";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -45,15 +44,20 @@ export default function Scoring() {
   const { stations, patrols, setScore } = competition;
   const { isAdmin, isScorer, canScoreSection } = useAuth();
 
-  const [selectedStation, setSelectedStation] = useState<string>(
-    stations[0]?.id ?? ""
-  );
+  const [selectedStation, setSelectedStation] = useState<string>("");
   const [selectedSections, setSelectedSections] = useState<ScoutSection[]>([]);
 
   const [saveState, setSaveState] = useState<Record<string, SaveState>>({});
   const requestSeqRef = useRef<Record<string, number>>({});
 
   const canScore = isAdmin || isScorer;
+
+  // ✅ Se till att vi väljer en station när stations laddats in
+  useEffect(() => {
+    if (!selectedStation && stations.length > 0) {
+      setSelectedStation(stations[0].id);
+    }
+  }, [stations, selectedStation]);
 
   // Safe wrapper runt getScore så vi aldrig får ReferenceError
   const safeGetScore = (patrolId: string, stationId: string) =>
@@ -103,8 +107,6 @@ export default function Scoring() {
         : [...prev, section]
     );
   };
-
-  const clearFilters = () => setSelectedSections([]);
 
   const keyFor = (patrolId: string, stationId: string) =>
     `${patrolId}|${stationId}`;
