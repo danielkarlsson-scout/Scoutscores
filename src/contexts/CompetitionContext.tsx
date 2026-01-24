@@ -680,73 +680,110 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   );
 
   // Scores (DB + optimistic UI + save state)
-  const setScore = useCallback(
-    async (patrolId: string, stationId: string, score: number) => {
-      if (!selectedId) return;
+const setScore = useCallback(
+  async (patrolId: string, stationId: string, score: number) => {
+    if (!selectedId) return;
 
-      const key = `${selectedId}:${patrolId}:${stationId}`;
+    const key = `${selectedId}:${patrolId}:${stationId}`;
 
-      // 1) optimistic update in local state
-      updateCurrentCompetition((comp) => {
-        const existingIndex = comp.scores.findIndex(
-          (s) => s.patrolId === patrolId && s.stationId === stationId
-        );
-
-        const newScore: Score = {
-          id: existingIndex >= 0 ? comp.scores[existingIndex].id : generateId(),
-          patrolId,
-          stationId,
-          score,
-          updatedAt: new Date().toISOString(),
-        };
-
-        if (existingIndex >= 0) {
-          const next = [...comp.scores];
-          next[existingIndex] = newScore;
-          return { ...comp, scores: next };
-        }
-
-        return { ...comp, scores: [...comp.scores, newScore] };
-      });
-
-      // 2) set saving state
-      setScoreSaveState((prev) => ({ ...prev, [key]: "saving" }));
-
-      // 3) upsert to DB
-      const { error } = await supabase.from("scores").upsert(
-        {
-          competition_id: selectedId,
-          patrol_id: patrolId,
-          station_id: stationId,
-          score,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "competition_id,patrol_id,station_id" }
+    // 1) optimistic update in local state
+    updateCurrentCompetition((comp) => {
+      const existingIndex = comp.scores.findIndex(
+        (s) => s.patrolId === patrolId && s.stationId === stationId
       );
 
-      if (error) {
-        console.error("Failed to save score:", error);
-        setScoreSaveState((prev) => ({ ...prev, [key]: "error" }));
-        return;
+      const newScore: Score = {
+        id: existingIndex >= 0 ? comp.scores[existingIndex].id : generateId(),
+        patrolId,
+        stationId,
+        score,
+        updatedAt: new Date().toISOString(),
+      };
+
+      if (existingIndex >= 0) {
+        const next = [...comp.scores];
+        next[existingIndex] = newScore;
+        return { ...comp, scores: next };
       }
 
-      // 4) saved -> back to idle
+      return { ...comp, scores: [...comp.scores, newScore] };
+    });
+
+    // 2) set saving state
+    setScoreSaveState((prev) => ({ ...prev, [key]: "saving" }));
+
+    // 3) payload (IMPORTANT: no match_id)
+    const payload = {
+      competition_id: selectedId,
+      patrol_id: patrolId,
+      station_id: stationId,
+      score,
+      updated_at: new Date().toISOString(),
+    };
+
+    // Helpful debug: if you still see match_id error, it comes from somewhere else
+    console.log("[setScore] saving payload:", payload);
+
+    // 4) Try UPSERT first
+    const { error: upsertError } = await supabase
+      .from("scores")
+      .upsert(payload, { onConflict: "competition_id,patrol_id,station_id" });
+
+    // If upsert succeeds -> done
+    if (!upsertError) {
       setScoreSaveState((prev) => ({ ...prev, [key]: "saved" }));
       window.setTimeout(() => {
         setScoreSaveState((prev) => ({ ...prev, [key]: "idle" }));
       }, 1200);
-    },
-    [selectedId, updateCurrentCompetition]
-  );
+      return;
+    }
 
-  const getScore = useCallback(
-    (patrolId: string, stationId: string) => {
-      const scoreRecord = scores.find((s) => s.patrolId === patrolId && s.stationId === stationId);
-      return scoreRecord?.score ?? 0;
-    },
-    [scores]
-  );
+    // If upsert fails, fallback to select->update/insert
+    console.warn("[setScore] upsert failed, trying fallback:", upsertError);
 
+    // Common case: missing unique constraint for onConflict, or schema mismatch
+    const { data: existing, error: findError } = await supabase
+      .from("scores")
+      .select("id")
+      .eq("competition_id", selectedId)
+      .eq("patrol_id", patrolId)
+      .eq("station_id", stationId)
+      .maybeSingle();
+
+    if (findError) {
+      console.error("[setScore] fallback select failed:", findError);
+      setScoreSaveState((prev) => ({ ...prev, [key]: "error" }));
+      return;
+    }
+
+    if (existing?.id) {
+      const { error: updError } = await supabase
+        .from("scores")
+        .update(payload)
+        .eq("id", existing.id);
+
+      if (updError) {
+        console.error("[setScore] fallback update failed:", updError);
+        setScoreSaveState((prev) => ({ ...prev, [key]: "error" }));
+        return;
+      }
+    } else {
+      const { error: insError } = await supabase.from("scores").insert(payload);
+
+      if (insError) {
+        console.error("[setScore] fallback insert failed:", insError);
+        setScoreSaveState((prev) => ({ ...prev, [key]: "error" }));
+        return;
+      }
+    }
+
+    setScoreSaveState((prev) => ({ ...prev, [key]: "saved" }));
+    window.setTimeout(() => {
+      setScoreSaveState((prev) => ({ ...prev, [key]: "idle" }));
+    }, 1200);
+  },
+  [selectedId, updateCurrentCompetition]
+);
   // Computed
   const getPatrolsWithScores = useCallback(
     (section?: ScoutSection): PatrolWithScore[] => {
