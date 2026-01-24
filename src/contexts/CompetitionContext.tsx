@@ -713,52 +713,31 @@ const setScore = useCallback(
     // 2) set saving state
     setScoreSaveState((prev) => ({ ...prev, [key]: "saving" }));
 
-    // 3) upsert to DB
-    const payload = {
-      competition_id: selectedId,
-      patrol_id: patrolId,
-      station_id: stationId,
-      score,
-      updated_at: nowIso,
-    };
+    // 3) upsert to DB (kompatibel, ingen maybeSingle)
+const payload = {
+  competition_id: selectedId,
+  patrol_id: patrolId,
+  station_id: stationId,
+  score,
+  updated_at: new Date().toISOString(),
+};
 
-    const { data, error } = await supabase
-      .from("scores")
-      .upsert(payload, { onConflict: "competition_id,patrol_id,station_id" })
-      .select("id,competition_id,patrol_id,station_id,score,updated_at") // ger bättre info vid debug
-      .maybeSingle();
+const { error } = await supabase
+  .from("scores")
+  .upsert(payload, { onConflict: "competition_id,patrol_id,station_id" });
 
-    if (error) {
-      // 🔥 Här får du den riktiga orsaken (RLS/trigger/etc)
-      console.error("❌ Failed to save score:", {
-        message: error.message,
-        details: (error as any).details,
-        hint: (error as any).hint,
-        code: (error as any).code,
-        payload,
-      });
+if (error) {
+  console.error("❌ Failed to save score:", {
+    message: error.message,
+    details: (error as any).details,
+    hint: (error as any).hint,
+    code: (error as any).code,
+    payload,
+  });
 
-      setScoreSaveState((prev) => ({ ...prev, [key]: "error" }));
-
-      // 🧯 Rollback: ladda om scores från DB så UI inte visar felaktigt
-      // (robust när RLS/trigger blockar)
-      const { data: fresh, error: freshErr } = await supabase
-        .from("scores")
-        .select("id,competition_id,patrol_id,station_id,score,updated_at")
-        .eq("competition_id", selectedId);
-
-      if (freshErr) {
-        console.error("⚠️ Failed to refresh scores after save error:", freshErr);
-        return;
-      }
-
-      updateCurrentCompetition((comp) => ({
-        ...comp,
-        scores: (fresh ?? []).map(mapScoreRow),
-      }));
-
-      return;
-    }
+  setScoreSaveState((prev) => ({ ...prev, [key]: "error" }));
+  return;
+}
 
     // 4) Om DB returnerade raden: synka id/updatedAt korrekt (viktigt om trigger sätter updated_at)
     if (data) {
