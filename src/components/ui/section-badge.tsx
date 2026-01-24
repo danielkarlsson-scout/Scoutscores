@@ -12,6 +12,7 @@ const sectionColors: Record<ScoutSection, string> = {
   upptackare: 'bg-[hsl(195,100%,44%)] text-white',
   aventyrare: 'bg-[hsl(21,85%,49%)] text-white',
   utmanare: 'bg-[hsl(334,100%,43%)] text-white',
+  rover: 'bg-[hsl(59,100%,44%)] text-white',
 };
 
 const sizeClasses = {
