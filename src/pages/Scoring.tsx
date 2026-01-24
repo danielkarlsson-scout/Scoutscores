@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useCompetition } from '@/contexts/CompetitionContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { SectionBadge } from '@/components/ui/section-badge';
@@ -25,32 +25,43 @@ import {
 export default function Scoring() {
   const { stations, patrols, setScore, getScore } = useCompetition();
   const { isAdmin, isScorer, canScoreSection } = useAuth();
+
   const [selectedStation, setSelectedStation] = useState<string>(stations[0]?.id ?? '');
   const [selectedSections, setSelectedSections] = useState<ScoutSection[]>([]);
 
-  // Check if user has any scoring permissions
+  // ✅ trackar "sparar" per (patrolId:stationId)
+  const [savingKeys, setSavingKeys] = useState<Record<string, boolean>>({});
+
   const canScore = isAdmin || isScorer;
 
-  // Filter stations based on selected sections
   const filteredStations = selectedSections.length === 0
     ? stations
     : stations.filter(station => {
-        // Show stations that are open to all OR have at least one matching section
         if (!station.allowedSections || station.allowedSections.length === 0) {
           return true;
         }
         return station.allowedSections.some(s => selectedSections.includes(s));
       });
 
-  const currentStation = stations.find(s => s.id === selectedStation);
+  // Om stationlistan ändras (t.ex. efter fetch), se till att selectedStation är valid
+  const currentStation = useMemo(() => {
+    const found = stations.find(s => s.id === selectedStation);
+    if (found) return found;
+    return stations[0] ?? null;
+  }, [stations, selectedStation]);
 
-  // Filter patrols based on selected sections AND current station's allowed sections
+  // håll selectedStation i sync om den blev ogiltig
+  useMemo(() => {
+    if (currentStation && currentStation.id !== selectedStation) {
+      setSelectedStation(currentStation.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentStation?.id]);
+
   const filteredPatrols = patrols.filter(patrol => {
-    // First check user's section filter
     if (selectedSections.length > 0 && !selectedSections.includes(patrol.section)) {
       return false;
     }
-    // Then check if current station allows this patrol's section
     if (currentStation?.allowedSections && currentStation.allowedSections.length > 0) {
       return currentStation.allowedSections.includes(patrol.section);
     }
@@ -58,7 +69,7 @@ export default function Scoring() {
   });
 
   const toggleSection = (section: ScoutSection) => {
-    setSelectedSections(prev => 
+    setSelectedSections(prev =>
       prev.includes(section)
         ? prev.filter(s => s !== section)
         : [...prev, section]
@@ -67,7 +78,21 @@ export default function Scoring() {
 
   const clearFilters = () => setSelectedSections([]);
 
-  // Show access denied if user has no scoring permissions
+  // ✅ Wrapper som awaitar DB-write + låser input per rad
+  const handleScoreChange = async (patrolId: string, stationId: string, score: number) => {
+    const key = `${patrolId}:${stationId}`;
+    setSavingKeys(prev => ({ ...prev, [key]: true }));
+    try {
+      await setScore(patrolId, stationId, score);
+    } finally {
+      setSavingKeys(prev => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    }
+  };
+
   if (!canScore) {
     return (
       <div className="space-y-6">
@@ -140,8 +165,8 @@ export default function Scoring() {
             <DropdownMenuTrigger asChild>
               <Button variant="outline" className="w-full sm:w-auto justify-start">
                 <Filter className="h-4 w-4 mr-2" />
-                {selectedSections.length === 0 
-                  ? 'Alla avdelningar' 
+                {selectedSections.length === 0
+                  ? 'Alla avdelningar'
                   : `${selectedSections.length} valda`}
               </Button>
             </DropdownMenuTrigger>
@@ -157,7 +182,8 @@ export default function Scoring() {
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
-          <Select value={selectedStation} onValueChange={setSelectedStation}>
+
+          <Select value={currentStation?.id ?? ''} onValueChange={setSelectedStation}>
             <SelectTrigger className="w-full sm:w-64">
               <SelectValue placeholder="Välj station" />
             </SelectTrigger>
@@ -181,9 +207,9 @@ export default function Scoring() {
         <div className="flex flex-wrap gap-2 items-center">
           <span className="text-sm text-muted-foreground">Filter:</span>
           {selectedSections.map(section => (
-            <Badge 
-              key={section} 
-              variant="secondary" 
+            <Badge
+              key={section}
+              variant="secondary"
               className="gap-1 cursor-pointer hover:bg-destructive/20"
               onClick={() => toggleSection(section)}
             >
@@ -207,11 +233,14 @@ export default function Scoring() {
             <CardDescription>
               {currentStation.description || `Max poäng: ${currentStation.maxScore}`}
               {currentStation.allowedSections && currentStation.allowedSections.length > 0 && (
-                <span className="ml-2">• Endast: {currentStation.allowedSections.map(s => SCOUT_SECTIONS[s].name).join(', ')}</span>
+                <span className="ml-2">
+                  • Endast: {currentStation.allowedSections.map(s => SCOUT_SECTIONS[s].name).join(', ')}
+                </span>
               )}
               <span className="ml-2">• Visar {filteredPatrols.length} patruller</span>
             </CardDescription>
           </CardHeader>
+
           <CardContent>
             {filteredPatrols.length === 0 ? (
               <p className="text-muted-foreground text-center py-6">
@@ -221,19 +250,30 @@ export default function Scoring() {
               <div className="space-y-6">
                 {filteredPatrols.map(patrol => {
                   const hasPermission = canScoreSection(patrol.section);
-                  
+                  const key = `${patrol.id}:${currentStation.id}`;
+                  const isSaving = !!savingKeys[key];
+
                   return (
                     <div key={patrol.id} className="flex items-center gap-4 py-2 border-b last:border-0">
                       <div className="flex-1 min-w-0">
                         <p className="font-medium truncate">{patrol.name}</p>
                         <SectionBadge section={patrol.section} size="sm" />
                       </div>
+
                       {hasPermission ? (
-                        <ScoreInput
-                          value={getScore(patrol.id, currentStation.id)}
-                          maxScore={currentStation.maxScore}
-                          onChange={(score) => setScore(patrol.id, currentStation.id, score)}
-                        />
+                        <div className="flex items-center gap-3">
+                          <ScoreInput
+                            value={getScore(patrol.id, currentStation.id)}
+                            maxScore={currentStation.maxScore}
+                            // ✅ DB-save (async)
+                            onChange={(score) => void handleScoreChange(patrol.id, currentStation.id, score)}
+                            // Om din ScoreInput stödjer disabled:
+                            // disabled={isSaving}
+                          />
+                          {isSaving && (
+                            <span className="text-xs text-muted-foreground">Sparar…</span>
+                          )}
+                        </div>
                       ) : (
                         <div className="flex items-center gap-2 text-muted-foreground">
                           <Lock className="h-4 w-4" />
