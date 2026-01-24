@@ -1,39 +1,89 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useCompetition } from "@/contexts/CompetitionContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { SectionBadge } from "@/components/ui/section-badge";
 import { ScoreInput } from "@/components/ui/score-input";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { ClipboardList, Flag, Filter, X, Shield, Lock, Loader2, CheckCircle2, AlertTriangle } from "lucide-react";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import {
+  ClipboardList,
+  Flag,
+  Filter,
+  X,
+  Shield,
+  Lock,
+  Loader2,
+  AlertTriangle,
+  CheckCircle2,
+  RefreshCcw,
+} from "lucide-react";
 import { ScoutSection, SCOUT_SECTIONS } from "@/types/competition";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+
+type SaveState = "idle" | "saving" | "saved" | "error";
 
 export default function Scoring() {
-  const { stations, patrols, setScore, getScore, getScoreSaveState } = useCompetition();
+  const { stations, patrols, setScore, getScore } = useCompetition();
   const { isAdmin, isScorer, canScoreSection } = useAuth();
 
-  const [selectedStation, setSelectedStation] = useState<string>("");
+  const [selectedStation, setSelectedStation] = useState<string>(
+    stations[0]?.id ?? ""
+  );
   const [selectedSections, setSelectedSections] = useState<ScoutSection[]>([]);
 
-  // Check if user has any scoring permissions
+  // status per "patrolId|stationId"
+  const [saveState, setSaveState] = useState<Record<string, SaveState>>({});
+  const [saveError, setSaveError] = useState<Record<string, string | null>>({});
+
+  // för att undvika race: senaste request vinner
+  const requestSeqRef = useRef<Record<string, number>>({});
+
   const canScore = isAdmin || isScorer;
 
-  // Ensure we always have a valid selectedStation
-  useEffect(() => {
-    if (!stations || stations.length === 0) {
-      setSelectedStation("");
-      return;
-    }
+  const filteredStations = useMemo(() => {
+    return selectedSections.length === 0
+      ? stations
+      : stations.filter((station) => {
+          if (!station.allowedSections || station.allowedSections.length === 0)
+            return true;
+          return station.allowedSections.some((s) => selectedSections.includes(s));
+        });
+  }, [stations, selectedSections]);
 
-    // If current selection no longer exists, pick first station
-    const stillExists = selectedStation && stations.some((s) => s.id === selectedStation);
-    if (!stillExists) {
-      setSelectedStation(stations[0].id);
-    }
+  const currentStation = useMemo(() => {
+    return stations.find((s) => s.id === selectedStation);
   }, [stations, selectedStation]);
+
+  const filteredPatrols = useMemo(() => {
+    return patrols.filter((patrol) => {
+      if (selectedSections.length > 0 && !selectedSections.includes(patrol.section)) {
+        return false;
+      }
+      if (currentStation?.allowedSections && currentStation.allowedSections.length > 0) {
+        return currentStation.allowedSections.includes(patrol.section);
+      }
+      return true;
+    });
+  }, [patrols, selectedSections, currentStation]);
 
   const toggleSection = (section: ScoutSection) => {
     setSelectedSections((prev) =>
@@ -43,72 +93,50 @@ export default function Scoring() {
 
   const clearFilters = () => setSelectedSections([]);
 
-  // Filter stations based on selected sections
-  const filteredStations = useMemo(() => {
-    if (selectedSections.length === 0) return stations;
+  const keyFor = (patrolId: string, stationId: string) => `${patrolId}|${stationId}`;
 
-    return stations.filter((station) => {
-      // Show stations that are open to all OR have at least one matching section
-      if (!station.allowedSections || station.allowedSections.length === 0) return true;
-      return station.allowedSections.some((s) => selectedSections.includes(s));
-    });
-  }, [stations, selectedSections]);
-
-  const currentStation = useMemo(
-    () => stations.find((s) => s.id === selectedStation),
-    [stations, selectedStation]
-  );
-
-  // Filter patrols based on selected sections AND current station's allowed sections
-  const filteredPatrols = useMemo(() => {
-    return patrols.filter((patrol) => {
-      // First check user's section filter
-      if (selectedSections.length > 0 && !selectedSections.includes(patrol.section)) return false;
-
-      // Then check if current station allows this patrol's section
-      if (currentStation?.allowedSections && currentStation.allowedSections.length > 0) {
-        return currentStation.allowedSections.includes(patrol.section);
-      }
-
-      return true;
-    });
-  }, [patrols, selectedSections, currentStation]);
-
-  // Helper for status UI
-  const renderSaveStatus = (patrolId: string, stationId: string) => {
-    const state = getScoreSaveState(patrolId, stationId);
-
-    if (state === "saving") {
-      return (
-        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          Sparar…
-        </span>
-      );
-    }
-
-    if (state === "saved") {
-      return (
-        <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-          <CheckCircle2 className="h-3.5 w-3.5" />
-          Sparad
-        </span>
-      );
-    }
-
-    if (state === "error") {
-      return (
-        <span className="inline-flex items-center gap-1 text-xs text-destructive">
-          <AlertTriangle className="h-3.5 w-3.5" />
-          Kunde inte spara
-        </span>
-      );
-    }
-
-    return null;
+  const setStatus = (k: string, state: SaveState, err: string | null = null) => {
+    setSaveState((prev) => ({ ...prev, [k]: state }));
+    setSaveError((prev) => ({ ...prev, [k]: err }));
   };
 
-  // Show access denied if user has no scoring permissions
+  const handleSetScore = async (patrolId: string, stationId: string, score: number) => {
+    const k = keyFor(patrolId, stationId);
+
+    // bump seq
+    const seq = (requestSeqRef.current[k] ?? 0) + 1;
+    requestSeqRef.current[k] = seq;
+
+    setStatus(k, "saving", null);
+
+    try {
+      await setScore(patrolId, stationId, score);
+
+      // om en nyare request har skickats: ignorera resultatet
+      if (requestSeqRef.current[k] !== seq) return;
+
+      setStatus(k, "saved", null);
+
+      // gå tillbaka till idle efter en kort stund så UI inte blir “stökigt”
+      window.setTimeout(() => {
+        // bara om vi fortfarande är "saved" och ingen ny request kommit
+        if (requestSeqRef.current[k] === seq) {
+          setSaveState((prev) => ({ ...prev, [k]: "idle" }));
+        }
+      }, 1200);
+    } catch (e: any) {
+      if (requestSeqRef.current[k] !== seq) return;
+      setStatus(k, "error", e?.message ?? "Kunde inte spara poängen.");
+    }
+  };
+
+  const retrySave = async (patrolId: string, stationId: string) => {
+    const current = getScore(patrolId, stationId);
+    // om null/undefined, försök inte
+    if (typeof current !== "number") return;
+    await handleSetScore(patrolId, stationId, current);
+  };
+
   if (!canScore) {
     return (
       <div className="space-y-6">
@@ -140,7 +168,9 @@ export default function Scoring() {
           <CardContent className="flex flex-col items-center justify-center py-12">
             <Flag className="h-12 w-12 text-muted-foreground mb-4" />
             <h3 className="text-lg font-semibold mb-2">Inga stationer skapade</h3>
-            <p className="text-muted-foreground text-center">Skapa stationer först för att kunna registrera poäng.</p>
+            <p className="text-muted-foreground text-center">
+              Skapa stationer först för att kunna registrera poäng.
+            </p>
           </CardContent>
         </Card>
       </div>
@@ -158,7 +188,9 @@ export default function Scoring() {
           <CardContent className="flex flex-col items-center justify-center py-12">
             <ClipboardList className="h-12 w-12 text-muted-foreground mb-4" />
             <h3 className="text-lg font-semibold mb-2">Inga patruller skapade</h3>
-            <p className="text-muted-foreground text-center">Skapa patruller först för att kunna registrera poäng.</p>
+            <p className="text-muted-foreground text-center">
+              Skapa patruller först för att kunna registrera poäng.
+            </p>
           </CardContent>
         </Card>
       </div>
@@ -204,7 +236,9 @@ export default function Scoring() {
                   {station.name} (max {station.maxScore}p)
                   {station.allowedSections && station.allowedSections.length > 0 && (
                     <span className="text-muted-foreground ml-1">
-                      [{station.allowedSections.map((s) => SCOUT_SECTIONS[s].name).join(", ")}]
+                      [{" "}
+                      {station.allowedSections.map((s) => SCOUT_SECTIONS[s].name).join(", ")}
+                      {" ]"}
                     </span>
                   )}
                 </SelectItem>
@@ -254,36 +288,71 @@ export default function Scoring() {
 
           <CardContent>
             {filteredPatrols.length === 0 ? (
-              <p className="text-muted-foreground text-center py-6">Inga patruller i valda avdelningar.</p>
+              <p className="text-muted-foreground text-center py-6">
+                Inga patruller i valda avdelningar.
+              </p>
             ) : (
               <div className="space-y-6">
                 {filteredPatrols.map((patrol) => {
                   const hasPermission = canScoreSection(patrol.section);
-                  const value = getScore(patrol.id, currentStation.id);
+                  const k = keyFor(patrol.id, currentStation.id);
+                  const state = saveState[k] ?? "idle";
+                  const errMsg = saveError[k];
 
                   return (
-                    <div key={patrol.id} className="flex items-center gap-4 py-2 border-b last:border-0">
+                    <div
+                      key={patrol.id}
+                      className="flex items-center gap-4 py-2 border-b last:border-0"
+                    >
                       <div className="flex-1 min-w-0">
                         <p className="font-medium truncate">{patrol.name}</p>
-                        <div className="flex items-center gap-2">
-                          <SectionBadge section={patrol.section} size="sm" />
-                          {hasPermission && renderSaveStatus(patrol.id, currentStation.id)}
-                        </div>
+                        <SectionBadge section={patrol.section} size="sm" />
+                      </div>
+
+                      {/* STATUS + RETRY */}
+                      <div className="w-28 flex justify-end">
+                        {state === "saving" && (
+                          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                            Sparar…
+                          </span>
+                        )}
+
+                        {state === "saved" && (
+                          <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                            <CheckCircle2 className="h-3 w-3" />
+                            Sparad
+                          </span>
+                        )}
+
+                        {state === "error" && (
+                          <button
+                            type="button"
+                            onClick={() => retrySave(patrol.id, currentStation.id)}
+                            className="inline-flex items-center gap-1 text-xs text-destructive hover:underline"
+                            title={errMsg ?? "Kunde inte spara. Klicka för att försöka igen."}
+                          >
+                            <AlertTriangle className="h-3 w-3" />
+                            Fel
+                            <RefreshCcw className="h-3 w-3" />
+                          </button>
+                        )}
                       </div>
 
                       {hasPermission ? (
                         <ScoreInput
-                          value={value}
+                          value={getScore(patrol.id, currentStation.id)}
                           maxScore={currentStation.maxScore}
-                          onChange={async (newScore) => {
-                            // async now
-                            await setScore(patrol.id, currentStation.id, newScore);
-                          }}
+                          onChange={(score) =>
+                            handleSetScore(patrol.id, currentStation.id, score)
+                          }
                         />
                       ) : (
                         <div className="flex items-center gap-2 text-muted-foreground">
                           <Lock className="h-4 w-4" />
-                          <span className="text-sm">{value ?? "-"}</span>
+                          <span className="text-sm">
+                            {getScore(patrol.id, currentStation.id) ?? "-"}
+                          </span>
                         </div>
                       )}
                     </div>
