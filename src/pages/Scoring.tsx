@@ -14,11 +14,9 @@ import {
   ClipboardList,
   Flag,
   Filter,
-  X,
   Shield,
   Lock,
   Loader2,
-  AlertTriangle,
   CheckCircle2,
   RefreshCcw,
 } from "lucide-react";
@@ -42,7 +40,9 @@ import {
 type SaveState = "idle" | "saving" | "saved" | "error";
 
 export default function Scoring() {
-  const { stations, patrols, setScore, getScore } = useCompetition();
+  // Hämta hela competition-objektet, så vi kan använda competition.getScore säkert
+  const competition = useCompetition();
+  const { stations, patrols, setScore } = competition;
   const { isAdmin, isScorer, canScoreSection } = useAuth();
 
   const [selectedStation, setSelectedStation] = useState<string>(
@@ -54,6 +54,12 @@ export default function Scoring() {
   const requestSeqRef = useRef<Record<string, number>>({});
 
   const canScore = isAdmin || isScorer;
+
+  // Safe wrapper runt getScore så vi aldrig får ReferenceError
+  const safeGetScore = (patrolId: string, stationId: string) =>
+    typeof competition.getScore === "function"
+      ? competition.getScore(patrolId, stationId)
+      : 0;
 
   const filteredStations = useMemo(() => {
     return selectedSections.length === 0
@@ -238,7 +244,7 @@ export default function Scoring() {
                 {hasPermission ? (
                   <div className="flex w-full items-center gap-3 sm:w-auto sm:shrink-0">
                     <ScoreInput
-                      value={getScore(patrol.id, currentStation.id)}
+                      value={safeGetScore(patrol.id, currentStation.id)}
                       maxScore={currentStation.maxScore}
                       onChange={(v) =>
                         handleSetScore(patrol.id, currentStation.id, v)
@@ -258,7 +264,7 @@ export default function Scoring() {
                 ) : (
                   <div className="flex items-center gap-2 text-muted-foreground">
                     <Lock className="h-4 w-4" />
-                    {getScore(patrol.id, currentStation.id) ?? "-"}
+                    {safeGetScore(patrol.id, currentStation.id) ?? "-"}
                   </div>
                 )}
               </div>
