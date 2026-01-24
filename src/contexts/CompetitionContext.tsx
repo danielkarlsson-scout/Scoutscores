@@ -1,18 +1,18 @@
-import React, { createContext, useContext, useEffect, useMemo, useState, useCallback } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import {
   Competition,
-  Station,
-  Patrol,
-  Score,
-  ScoutSection,
-  PatrolWithScore,
   CompetitionStatus,
+  Patrol,
+  PatrolWithScore,
+  Score,
   ScoutGroup,
   ScoutGroupTemplate,
+  ScoutSection,
+  Station,
 } from "@/types/competition";
 import { supabase } from "@/integrations/supabase/client";
 
-type ScoreSaveState = "idle" | "saving" | "saved" | "error";
+type SaveState = "idle" | "saving" | "saved" | "error";
 
 interface CompetitionContextType {
   competitions: Competition[];
@@ -25,59 +25,137 @@ interface CompetitionContextType {
   scores: Score[];
   scoutGroups: ScoutGroup[];
 
+  scoutGroupTemplates: ScoutGroupTemplate[];
+
+  // competitions
   createCompetition: (data: { name: string; date: string }) => Promise<Competition>;
   selectCompetition: (id: string) => void;
-  closeCompetition: (id: string) => void;
-  reopenCompetition: (id: string) => void;
-  deleteCompetition: (id: string) => void;
+  closeCompetition: (id: string) => Promise<void>;
+  reopenCompetition: (id: string) => Promise<void>;
+  deleteCompetition: (id: string) => Promise<void>;
   updateCompetitionById: (id: string, updates: Partial<Competition>) => void;
 
+  // stations
   addStation: (station: Omit<Station, "id" | "createdAt">) => Promise<void>;
   updateStation: (id: string, updates: Partial<Station>) => Promise<void>;
   deleteStation: (id: string) => Promise<void>;
 
+  // patrols
   addPatrol: (patrol: Omit<Patrol, "id" | "createdAt">) => Promise<void>;
   updatePatrol: (id: string, updates: Partial<Patrol>) => Promise<void>;
   deletePatrol: (id: string) => Promise<void>;
 
+  // scout groups
   addScoutGroup: (name: string) => Promise<void>;
   updateScoutGroup: (id: string, name: string) => Promise<void>;
   deleteScoutGroup: (id: string) => Promise<void>;
   importScoutGroupsFromTemplate: (templateId: string) => Promise<void>;
 
-  scoutGroupTemplates: ScoutGroupTemplate[];
-  createScoutGroupTemplate: (name: string, groups: string[]) => Promise<void>;
-  deleteScoutGroupTemplate: (id: string) => Promise<void>;
+  // templates (DB)
   saveCurrentGroupsAsTemplate: (templateName: string) => Promise<void>;
+  deleteScoutGroupTemplate: (id: string) => Promise<void>;
 
-  // ✅ Scores (DB)
+  // scoring
   setScore: (patrolId: string, stationId: string, score: number) => Promise<void>;
   getScore: (patrolId: string, stationId: string) => number;
-  getScoreSaveState: (patrolId: string, stationId: string) => ScoreSaveState;
+  getScoreSaveState: (patrolId: string, stationId: string) => SaveState;
   retrySaveScore: (patrolId: string, stationId: string) => Promise<void>;
 
+  // computed
   getPatrolsWithScores: (section?: ScoutSection) => PatrolWithScore[];
   getStationScores: (stationId: string) => Array<{ patrol: Patrol; score: number }>;
   getScoutGroupName: (groupId: string) => string | undefined;
 
+  // local helper
   updateCompetition: (updates: Partial<Competition>) => void;
 }
 
 const CompetitionContext = createContext<CompetitionContextType | undefined>(undefined);
 
-const scoreKey = (competitionId: string, patrolId: string, stationId: string) =>
-  `${competitionId}::${patrolId}::${stationId}`;
+const SELECTED_KEY = "scout-selected-competition";
+
+// For save state map keys
+const scoreKey = (patrolId: string, stationId: string) => `${patrolId}:${stationId}`;
+
+function mapDbCompetition(row: any): Competition {
+  const status: CompetitionStatus = row.is_active ? "active" : "closed";
+  return {
+    id: row.id,
+    name: row.name,
+    date: row.date,
+    status,
+    stations: [],
+    patrols: [],
+    scores: [],
+    scoutGroups: [],
+    createdAt: row.created_at ?? new Date().toISOString(),
+    closedAt: row.closed_at ?? undefined,
+  };
+}
+
+function mapDbStation(row: any): Station {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? "",
+    maxScore: row.max_score ?? row.maxScore ?? 0,
+    leaderEmail: row.leader_email ?? undefined,
+    allowedSections: row.allowed_sections ?? undefined,
+    createdAt: row.created_at ?? new Date().toISOString(),
+  };
+}
+
+function mapDbPatrol(row: any): Patrol {
+  return {
+    id: row.id,
+    name: row.name,
+    section: row.section,
+    scoutGroupId: row.scout_group_id ?? undefined,
+    members: row.members ?? undefined,
+    createdAt: row.created_at ?? new Date().toISOString(),
+  };
+}
+
+function mapDbScore(row: any): Score {
+  return {
+    id: row.id,
+    patrolId: row.patrol_id,
+    stationId: row.station_id,
+    score: row.score,
+    updatedAt: row.updated_at ?? new Date().toISOString(),
+  };
+}
+
+function mapDbScoutGroup(row: any): ScoutGroup {
+  return {
+    id: row.id,
+    name: row.name,
+    createdAt: row.created_at ?? new Date().toISOString(),
+  };
+}
+
+function mapDbTemplate(row: any): ScoutGroupTemplate {
+  return {
+    id: row.id,
+    name: row.name,
+    groups: row.groups ?? [],
+    createdAt: row.created_at ?? new Date().toISOString(),
+  };
+}
 
 export function CompetitionProvider({ children }: { children: React.ReactNode }) {
-  // ------------------------------------------------------------
-  // OBS: Jag lämnar dina befintliga DB-loads för competitions/templates/stations/patrols som de är.
-  // Här visar jag bara den delen som behövs för scores + state.
-  // ------------------------------------------------------------
-
   const [competitions, setCompetitions] = useState<Competition[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(() => localStorage.getItem(SELECTED_KEY));
 
-  // Derived state
+  const [scoutGroupTemplates, setScoutGroupTemplates] = useState<ScoutGroupTemplate[]>([]);
+
+  // For optimistic scoring + status
+  const [scoreOverrides, setScoreOverrides] = useState<Map<string, number>>(new Map());
+  const [scoreSaveState, setScoreSaveState] = useState<Map<string, SaveState>>(new Map());
+  const [pendingRetry, setPendingRetry] = useState<Map<string, { patrolId: string; stationId: string; score: number }>>(
+    new Map()
+  );
+
   const competition = useMemo(() => competitions.find((c) => c.id === selectedId) ?? null, [competitions, selectedId]);
   const activeCompetitions = useMemo(() => competitions.filter((c) => c.status === "active"), [competitions]);
   const archivedCompetitions = useMemo(() => competitions.filter((c) => c.status === "closed"), [competitions]);
@@ -86,194 +164,663 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   const patrols = competition?.patrols ?? [];
   const scores = competition?.scores ?? [];
   const scoutGroups = competition?.scoutGroups ?? [];
-  const scoutGroupTemplates = competition?.scoutGroupTemplates ?? ([] as any); // om du har dem i context, annars byt till ditt riktiga state
 
-  // ----------------------------------------------------------------
-  // ✅ Score save state + last attempted value (för retry)
-  // ----------------------------------------------------------------
-  const [scoreSaveStates, setScoreSaveStates] = useState<Record<string, ScoreSaveState>>({});
-  const [scoreLastAttempt, setScoreLastAttempt] = useState<Record<string, number>>({});
+  // persist selection
+  useEffect(() => {
+    if (selectedId) localStorage.setItem(SELECTED_KEY, selectedId);
+    else localStorage.removeItem(SELECTED_KEY);
+  }, [selectedId]);
 
-  const getScoreSaveState = useCallback(
-    (patrolId: string, stationId: string): ScoreSaveState => {
-      if (!selectedId) return "idle";
-      const k = scoreKey(selectedId, patrolId, stationId);
-      return scoreSaveStates[k] ?? "idle";
-    },
-    [scoreSaveStates, selectedId]
-  );
+  // Auto-select first active if none selected
+  useEffect(() => {
+    if (!selectedId && activeCompetitions.length > 0) setSelectedId(activeCompetitions[0].id);
+  }, [selectedId, activeCompetitions]);
 
-  // ✅ Get local cached score value (from state)
+  const refreshAll = useCallback(async () => {
+    // 1) competitions
+    const { data: comps, error: compsErr } = await supabase
+      .from("competitions")
+      .select("id,name,date,is_active,created_at,closed_at")
+      .order("created_at", { ascending: false });
+
+    if (compsErr) {
+      console.error("Failed to load competitions:", compsErr);
+      setCompetitions([]);
+      return;
+    }
+
+    const mapped = (comps ?? []).map(mapDbCompetition);
+
+    const ids = mapped.map((c) => c.id);
+    if (ids.length === 0) {
+      setCompetitions([]);
+      return;
+    }
+
+    // 2) fetch related tables in parallel (for counts + selected view)
+    const [stationsRes, patrolsRes, scoresRes, groupsRes] = await Promise.all([
+      supabase
+        .from("stations")
+        .select("id,competition_id,name,description,max_score,leader_email,allowed_sections,created_at")
+        .in("competition_id", ids),
+      supabase
+        .from("patrols")
+        .select("id,competition_id,name,section,scout_group_id,members,created_at")
+        .in("competition_id", ids),
+      supabase
+        .from("scores")
+        .select("id,competition_id,patrol_id,station_id,score,updated_at")
+        .in("competition_id", ids),
+      supabase
+        .from("scout_groups")
+        .select("id,competition_id,name,created_at")
+        .in("competition_id", ids),
+    ]);
+
+    if (stationsRes.error) console.error("Failed to load stations:", stationsRes.error);
+    if (patrolsRes.error) console.error("Failed to load patrols:", patrolsRes.error);
+    if (scoresRes.error) console.error("Failed to load scores:", scoresRes.error);
+    if (groupsRes.error) console.error("Failed to load scout_groups:", groupsRes.error);
+
+    const stationsByComp = new Map<string, Station[]>();
+    for (const row of stationsRes.data ?? []) {
+      const cid = (row as any).competition_id;
+      const arr = stationsByComp.get(cid) ?? [];
+      arr.push(mapDbStation(row));
+      stationsByComp.set(cid, arr);
+    }
+
+    const patrolsByComp = new Map<string, Patrol[]>();
+    for (const row of patrolsRes.data ?? []) {
+      const cid = (row as any).competition_id;
+      const arr = patrolsByComp.get(cid) ?? [];
+      arr.push(mapDbPatrol(row));
+      patrolsByComp.set(cid, arr);
+    }
+
+    const scoresByComp = new Map<string, Score[]>();
+    for (const row of scoresRes.data ?? []) {
+      const cid = (row as any).competition_id;
+      const arr = scoresByComp.get(cid) ?? [];
+      arr.push(mapDbScore(row));
+      scoresByComp.set(cid, arr);
+    }
+
+    const groupsByComp = new Map<string, ScoutGroup[]>();
+    for (const row of groupsRes.data ?? []) {
+      const cid = (row as any).competition_id;
+      const arr = groupsByComp.get(cid) ?? [];
+      arr.push(mapDbScoutGroup(row));
+      groupsByComp.set(cid, arr);
+    }
+
+    const merged = mapped.map((c) => ({
+      ...c,
+      stations: stationsByComp.get(c.id) ?? [],
+      patrols: patrolsByComp.get(c.id) ?? [],
+      scores: scoresByComp.get(c.id) ?? [],
+      scoutGroups: groupsByComp.get(c.id) ?? [],
+    }));
+
+    setCompetitions(merged);
+  }, []);
+
+  const refreshTemplates = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("scout_group_templates")
+      .select("id,name,groups,created_at")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Failed to load templates:", error);
+      setScoutGroupTemplates([]);
+      return;
+    }
+
+    setScoutGroupTemplates((data ?? []).map(mapDbTemplate));
+  }, []);
+
+  useEffect(() => {
+    refreshAll();
+    refreshTemplates();
+  }, [refreshAll, refreshTemplates]);
+
+  // -------------------------
+  // competitions
+  // -------------------------
+  const createCompetition = useCallback(async (data: { name: string; date: string }): Promise<Competition> => {
+    const name = data.name.trim();
+    const date = data.date;
+
+    if (!name) throw new Error("Competition name is required");
+
+    const { data: dbComp, error } = await supabase
+      .from("competitions")
+      .insert({ name, date, is_active: true })
+      .select("id,name,date,is_active,created_at,closed_at")
+      .single();
+
+    if (error || !dbComp) {
+      console.error("Failed to create competition:", error);
+      throw error ?? new Error("Failed to create competition");
+    }
+
+    const newComp = mapDbCompetition(dbComp);
+    setCompetitions((prev) => [newComp, ...prev]);
+    setSelectedId(newComp.id);
+
+    return newComp;
+  }, []);
+
+  const selectCompetition = useCallback((id: string) => setSelectedId(id), []);
+
+  const closeCompetition = useCallback(async (id: string) => {
+    const closedAt = new Date().toISOString();
+
+    const { error } = await supabase
+      .from("competitions")
+      .update({ is_active: false, closed_at: closedAt })
+      .eq("id", id);
+
+    if (error) {
+      console.error("Failed to close competition:", error);
+      return;
+    }
+
+    setCompetitions((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, status: "closed", closedAt } : c))
+    );
+
+    if (id === selectedId) {
+      const remaining = competitions.filter((c) => c.id !== id && c.status === "active");
+      setSelectedId(remaining[0]?.id ?? null);
+    }
+  }, [competitions, selectedId]);
+
+  const reopenCompetition = useCallback(async (id: string) => {
+    const { error } = await supabase
+      .from("competitions")
+      .update({ is_active: true, closed_at: null })
+      .eq("id", id);
+
+    if (error) {
+      console.error("Failed to reopen competition:", error);
+      return;
+    }
+
+    setCompetitions((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, status: "active", closedAt: undefined } : c))
+    );
+  }, []);
+
+  const deleteCompetition = useCallback(async (id: string) => {
+    // Delete competition row. (Assumes you have FK cascade or you handle cleanup elsewhere)
+    const { error } = await supabase.from("competitions").delete().eq("id", id);
+    if (error) {
+      console.error("Failed to delete competition:", error);
+      return;
+    }
+
+    setCompetitions((prev) => prev.filter((c) => c.id !== id));
+    if (id === selectedId) setSelectedId(null);
+  }, [selectedId]);
+
+  const updateCompetitionById = useCallback((id: string, updates: Partial<Competition>) => {
+    setCompetitions((prev) => prev.map((c) => (c.id === id ? { ...c, ...updates } : c)));
+
+    // Fire-and-forget DB update (name/date only)
+    (async () => {
+      const patch: any = {};
+      if (typeof updates.name === "string") patch.name = updates.name;
+      if (typeof updates.date === "string") patch.date = updates.date;
+      if (Object.keys(patch).length === 0) return;
+
+      const { error } = await supabase.from("competitions").update(patch).eq("id", id);
+      if (error) console.error("Failed to update competition:", error);
+    })();
+  }, []);
+
+  const updateCompetition = useCallback((updates: Partial<Competition>) => {
+    if (!selectedId) return;
+    updateCompetitionById(selectedId, updates);
+  }, [selectedId, updateCompetitionById]);
+
+  // -------------------------
+  // stations
+  // -------------------------
+  const addStation = useCallback(async (station: Omit<Station, "id" | "createdAt">) => {
+    if (!selectedId) return;
+
+    const { data, error } = await supabase
+      .from("stations")
+      .insert({
+        competition_id: selectedId,
+        name: station.name,
+        description: station.description,
+        max_score: station.maxScore,
+        leader_email: station.leaderEmail ?? null,
+        allowed_sections: station.allowedSections ?? null,
+      })
+      .select("id,competition_id,name,description,max_score,leader_email,allowed_sections,created_at")
+      .single();
+
+    if (error || !data) {
+      console.error("Failed to add station:", error);
+      return;
+    }
+
+    const newStation = mapDbStation(data);
+    setCompetitions((prev) =>
+      prev.map((c) => (c.id === selectedId ? { ...c, stations: [...c.stations, newStation] } : c))
+    );
+  }, [selectedId]);
+
+  const updateStation = useCallback(async (id: string, updates: Partial<Station>) => {
+    if (!selectedId) return;
+
+    const patch: any = {};
+    if (typeof updates.name === "string") patch.name = updates.name;
+    if (typeof updates.description === "string") patch.description = updates.description;
+    if (typeof updates.maxScore === "number") patch.max_score = updates.maxScore;
+    if (typeof updates.leaderEmail === "string") patch.leader_email = updates.leaderEmail;
+    if (Array.isArray(updates.allowedSections)) patch.allowed_sections = updates.allowedSections;
+
+    const { error } = await supabase.from("stations").update(patch).eq("id", id);
+
+    if (error) {
+      console.error("Failed to update station:", error);
+      return;
+    }
+
+    setCompetitions((prev) =>
+      prev.map((c) =>
+        c.id === selectedId
+          ? { ...c, stations: c.stations.map((s) => (s.id === id ? { ...s, ...updates } : s)) }
+          : c
+      )
+    );
+  }, [selectedId]);
+
+  const deleteStation = useCallback(async (id: string) => {
+    if (!selectedId) return;
+
+    const { error } = await supabase.from("stations").delete().eq("id", id);
+    if (error) {
+      console.error("Failed to delete station:", error);
+      return;
+    }
+
+    setCompetitions((prev) =>
+      prev.map((c) =>
+        c.id === selectedId
+          ? {
+              ...c,
+              stations: c.stations.filter((s) => s.id !== id),
+              // also remove scores related to station
+              scores: c.scores.filter((sc) => sc.stationId !== id),
+            }
+          : c
+      )
+    );
+  }, [selectedId]);
+
+  // -------------------------
+  // patrols
+  // -------------------------
+  const addPatrol = useCallback(async (patrol: Omit<Patrol, "id" | "createdAt">) => {
+    if (!selectedId) return;
+
+    const { data, error } = await supabase
+      .from("patrols")
+      .insert({
+        competition_id: selectedId,
+        name: patrol.name,
+        section: patrol.section,
+        scout_group_id: patrol.scoutGroupId ?? null,
+        members: patrol.members ?? null,
+      })
+      .select("id,competition_id,name,section,scout_group_id,members,created_at")
+      .single();
+
+    if (error || !data) {
+      console.error("Failed to add patrol:", error);
+      return;
+    }
+
+    const newPatrol = mapDbPatrol(data);
+    setCompetitions((prev) =>
+      prev.map((c) => (c.id === selectedId ? { ...c, patrols: [...c.patrols, newPatrol] } : c))
+    );
+  }, [selectedId]);
+
+  const updatePatrol = useCallback(async (id: string, updates: Partial<Patrol>) => {
+    if (!selectedId) return;
+
+    const patch: any = {};
+    if (typeof updates.name === "string") patch.name = updates.name;
+    if (typeof updates.section === "string") patch.section = updates.section;
+    if ("scoutGroupId" in updates) patch.scout_group_id = updates.scoutGroupId ?? null;
+    if ("members" in updates) patch.members = updates.members ?? null;
+
+    const { error } = await supabase.from("patrols").update(patch).eq("id", id);
+    if (error) {
+      console.error("Failed to update patrol:", error);
+      return;
+    }
+
+    setCompetitions((prev) =>
+      prev.map((c) =>
+        c.id === selectedId
+          ? { ...c, patrols: c.patrols.map((p) => (p.id === id ? { ...p, ...updates } : p)) }
+          : c
+      )
+    );
+  }, [selectedId]);
+
+  const deletePatrol = useCallback(async (id: string) => {
+    if (!selectedId) return;
+
+    const { error } = await supabase.from("patrols").delete().eq("id", id);
+    if (error) {
+      console.error("Failed to delete patrol:", error);
+      return;
+    }
+
+    setCompetitions((prev) =>
+      prev.map((c) =>
+        c.id === selectedId
+          ? {
+              ...c,
+              patrols: c.patrols.filter((p) => p.id !== id),
+              scores: c.scores.filter((sc) => sc.patrolId !== id),
+            }
+          : c
+      )
+    );
+  }, [selectedId]);
+
+  // -------------------------
+  // scout groups (DB)
+  // -------------------------
+  const addScoutGroup = useCallback(async (name: string) => {
+    if (!selectedId) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+
+    const { data, error } = await supabase
+      .from("scout_groups")
+      .insert({ competition_id: selectedId, name: trimmed })
+      .select("id,competition_id,name,created_at")
+      .single();
+
+    if (error || !data) {
+      console.error("Kunde inte skapa kår:", error);
+      return;
+    }
+
+    const newGroup = mapDbScoutGroup(data);
+
+    setCompetitions((prev) =>
+      prev.map((c) => (c.id === selectedId ? { ...c, scoutGroups: [...c.scoutGroups, newGroup] } : c))
+    );
+  }, [selectedId]);
+
+  const updateScoutGroup = useCallback(async (id: string, name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed || !selectedId) return;
+
+    const { error } = await supabase.from("scout_groups").update({ name: trimmed }).eq("id", id);
+    if (error) {
+      console.error("Kunde inte uppdatera kår:", error);
+      return;
+    }
+
+    setCompetitions((prev) =>
+      prev.map((c) =>
+        c.id === selectedId
+          ? { ...c, scoutGroups: c.scoutGroups.map((g) => (g.id === id ? { ...g, name: trimmed } : g)) }
+          : c
+      )
+    );
+  }, [selectedId]);
+
+  const deleteScoutGroup = useCallback(async (id: string) => {
+    if (!selectedId) return;
+
+    const { error } = await supabase.from("scout_groups").delete().eq("id", id);
+    if (error) {
+      console.error("Kunde inte ta bort kår:", error);
+      return;
+    }
+
+    setCompetitions((prev) =>
+      prev.map((c) =>
+        c.id === selectedId
+          ? {
+              ...c,
+              scoutGroups: c.scoutGroups.filter((g) => g.id !== id),
+              patrols: c.patrols.map((p) => (p.scoutGroupId === id ? { ...p, scoutGroupId: undefined } : p)),
+            }
+          : c
+      )
+    );
+  }, [selectedId]);
+
+  // -------------------------
+  // templates (DB)
+  // -------------------------
+  const saveCurrentGroupsAsTemplate = useCallback(async (templateName: string) => {
+    const name = templateName.trim();
+    if (!name) return;
+
+    const groupNames = scoutGroups.map((g) => g.name);
+    if (groupNames.length === 0) return;
+
+    const { data, error } = await supabase
+      .from("scout_group_templates")
+      .insert({ name, groups: groupNames })
+      .select("id,name,groups,created_at")
+      .single();
+
+    if (error || !data) {
+      console.error("Failed to save template:", error);
+      return;
+    }
+
+    setScoutGroupTemplates((prev) => [mapDbTemplate(data), ...prev]);
+  }, [scoutGroups]);
+
+  const deleteScoutGroupTemplate = useCallback(async (id: string) => {
+    const { error } = await supabase.from("scout_group_templates").delete().eq("id", id);
+    if (error) {
+      console.error("Failed to delete template:", error);
+      return;
+    }
+    setScoutGroupTemplates((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  const importScoutGroupsFromTemplate = useCallback(async (templateId: string) => {
+    if (!selectedId) return;
+
+    const template = scoutGroupTemplates.find((t) => t.id === templateId);
+    if (!template) return;
+
+    const existingNames = new Set((scoutGroups ?? []).map((g) => g.name.toLowerCase()));
+    const namesToAdd = template.groups.filter((n) => !existingNames.has(n.toLowerCase()));
+    if (namesToAdd.length === 0) return;
+
+    const rowsToInsert = namesToAdd.map((name) => ({ name, competition_id: selectedId }));
+
+    const { data, error } = await supabase
+      .from("scout_groups")
+      .insert(rowsToInsert)
+      .select("id,competition_id,name,created_at");
+
+    if (error) {
+      console.error("Kunde inte importera kårer från mall:", error);
+      return;
+    }
+
+    const newGroups = (data ?? []).map(mapDbScoutGroup);
+
+    setCompetitions((prev) =>
+      prev.map((c) =>
+        c.id === selectedId ? { ...c, scoutGroups: [...c.scoutGroups, ...newGroups] } : c
+      )
+    );
+  }, [selectedId, scoutGroupTemplates, scoutGroups]);
+
+  // -------------------------
+  // scoring (DB upsert)
+  // -------------------------
   const getScore = useCallback(
     (patrolId: string, stationId: string) => {
-      const scoreRecord = scores.find((s) => s.patrolId === patrolId && s.stationId === stationId);
-      return scoreRecord?.score ?? 0;
+      const key = scoreKey(patrolId, stationId);
+      if (scoreOverrides.has(key)) return scoreOverrides.get(key)!;
+
+      const row = scores.find((s) => s.patrolId === patrolId && s.stationId === stationId);
+      return row?.score ?? 0;
     },
-    [scores]
+    [scores, scoreOverrides]
   );
 
-  // ✅ Upsert score till DB + uppdatera lokal state
-  const setScore = useCallback(
-    async (patrolId: string, stationId: string, scoreValue: number) => {
+  const getScoreSaveState = useCallback(
+    (patrolId: string, stationId: string): SaveState => {
+      const key = scoreKey(patrolId, stationId);
+      return scoreSaveState.get(key) ?? "idle";
+    },
+    [scoreSaveState]
+  );
+
+  const persistScore = useCallback(
+    async (patrolId: string, stationId: string, score: number) => {
       if (!selectedId) return;
 
-      const k = scoreKey(selectedId, patrolId, stationId);
+      const key = scoreKey(patrolId, stationId);
+      setScoreSaveState((prev) => new Map(prev).set(key, "saving"));
 
-      // Optimistisk UI: uppdatera lokalt direkt
+      const { data, error } = await supabase
+        .from("scores")
+        .upsert(
+          {
+            competition_id: selectedId,
+            patrol_id: patrolId,
+            station_id: stationId,
+            score,
+            updated_at: new Date().toISOString(),
+          },
+          // Requires unique constraint on (competition_id, patrol_id, station_id)
+          { onConflict: "competition_id,patrol_id,station_id" }
+        )
+        .select("id,competition_id,patrol_id,station_id,score,updated_at")
+        .single();
+
+      if (error || !data) {
+        console.error("Failed to save score:", error);
+        setScoreSaveState((prev) => new Map(prev).set(key, "error"));
+        setPendingRetry((prev) => new Map(prev).set(key, { patrolId, stationId, score }));
+        return;
+      }
+
+      const saved = mapDbScore(data);
+
       setCompetitions((prev) =>
         prev.map((c) => {
           if (c.id !== selectedId) return c;
 
-          const existingIndex = (c.scores ?? []).findIndex(
-            (s) => s.patrolId === patrolId && s.stationId === stationId
-          );
-
-          const newScore: Score = {
-            id: existingIndex >= 0 ? c.scores[existingIndex].id : crypto.randomUUID(),
-            patrolId,
-            stationId,
-            score: scoreValue,
-            updatedAt: new Date().toISOString(),
-          };
-
-          if (existingIndex >= 0) {
-            const nextScores = [...c.scores];
-            nextScores[existingIndex] = newScore;
-            return { ...c, scores: nextScores };
+          const existingIdx = c.scores.findIndex((s) => s.patrolId === patrolId && s.stationId === stationId);
+          if (existingIdx >= 0) {
+            const next = [...c.scores];
+            next[existingIdx] = saved;
+            return { ...c, scores: next };
           }
-
-          return { ...c, scores: [...(c.scores ?? []), newScore] };
+          return { ...c, scores: [...c.scores, saved] };
         })
       );
 
-      setScoreLastAttempt((prev) => ({ ...prev, [k]: scoreValue }));
-      setScoreSaveStates((prev) => ({ ...prev, [k]: "saving" }));
+      setScoreSaveState((prev) => new Map(prev).set(key, "saved"));
+      setPendingRetry((prev) => {
+        const next = new Map(prev);
+        next.delete(key);
+        return next;
+      });
 
-      // 🔥 DB upsert: använd snake_case som din tabell har
-      const payload = {
-        competition_id: selectedId,
-        patrol_id: patrolId,
-        station_id: stationId,
-        score: scoreValue,
-        updated_at: new Date().toISOString(),
-      };
+      // Clear overrides once saved (keep UI consistent with DB list)
+      setScoreOverrides((prev) => {
+        const next = new Map(prev);
+        next.delete(key);
+        return next;
+      });
 
-      const { error } = await supabase
-        .from("scores")
-        .upsert(payload, { onConflict: "competition_id,patrol_id,station_id" });
-
-      if (error) {
-        // Detta är din 400: logga detaljer så du ser exakt varför
-        console.error("Failed to save score:", {
-          message: error.message,
-          details: (error as any).details,
-          hint: (error as any).hint,
-          code: (error as any).code,
-          payload,
-        });
-
-        setScoreSaveStates((prev) => ({ ...prev, [k]: "error" }));
-        return;
-      }
-
-      // Markera “saved” en stund
-      setScoreSaveStates((prev) => ({ ...prev, [k]: "saved" }));
-      window.setTimeout(() => {
-        setScoreSaveStates((prev) => {
-          // sänk bara om den fortfarande är saved (om user ändrade igen -> saving/error)
-          if (prev[k] !== "saved") return prev;
-          const copy = { ...prev };
-          copy[k] = "idle";
-          return copy;
+      // Optional: return to idle after a short moment
+      setTimeout(() => {
+        setScoreSaveState((prev) => {
+          const next = new Map(prev);
+          if (next.get(key) === "saved") next.set(key, "idle");
+          return next;
         });
       }, 1200);
     },
     [selectedId]
   );
 
-  // ✅ Retry: försök spara senaste värdet igen
-  const retrySaveScore = useCallback(
-    async (patrolId: string, stationId: string) => {
-      if (!selectedId) return;
-      const k = scoreKey(selectedId, patrolId, stationId);
+  const setScore = useCallback(
+    async (patrolId: string, stationId: string, score: number) => {
+      const key = scoreKey(patrolId, stationId);
 
-      const last = scoreLastAttempt[k];
-      // fallback: ta nuvarande value om last saknas
-      const current = getScore(patrolId, stationId);
-      const valueToRetry = typeof last === "number" ? last : current;
+      // optimistic UI
+      setScoreOverrides((prev) => new Map(prev).set(key, score));
 
-      await setScore(patrolId, stationId, valueToRetry);
+      await persistScore(patrolId, stationId, score);
     },
-    [selectedId, scoreLastAttempt, getScore, setScore]
+    [persistScore]
   );
 
-  // ------------------------------------------------------------
-  // Resten av dina metoder: lämna som du har (DB för competitions/templates/stations/patrols osv)
-  // ------------------------------------------------------------
+  const retrySaveScore = useCallback(
+    async (patrolId: string, stationId: string) => {
+      const key = scoreKey(patrolId, stationId);
+      const pending = pendingRetry.get(key);
+      if (!pending) return;
 
-  const createCompetition = useCallback(async (data: { name: string; date: string }): Promise<Competition> => {
-    // behåll din befintliga DB-implementation
-    throw new Error("Not implemented here (keep your current DB implementation).");
-  }, []);
+      await persistScore(patrolId, stationId, pending.score);
+    },
+    [pendingRetry, persistScore]
+  );
 
-  const selectCompetition = useCallback((id: string) => setSelectedId(id), []);
-
-  const closeCompetition = useCallback((_id: string) => {}, []);
-  const reopenCompetition = useCallback((_id: string) => {}, []);
-  const deleteCompetition = useCallback((_id: string) => {}, []);
-  const updateCompetitionById = useCallback((_id: string, _updates: Partial<Competition>) => {}, []);
-
-  const addStation = useCallback(async (_station: Omit<Station, "id" | "createdAt">) => {}, []);
-  const updateStation = useCallback(async (_id: string, _updates: Partial<Station>) => {}, []);
-  const deleteStation = useCallback(async (_id: string) => {}, []);
-
-  const addPatrol = useCallback(async (_patrol: Omit<Patrol, "id" | "createdAt">) => {}, []);
-  const updatePatrol = useCallback(async (_id: string, _updates: Partial<Patrol>) => {}, []);
-  const deletePatrol = useCallback(async (_id: string) => {}, []);
-
-  const addScoutGroup = useCallback(async (_name: string) => {}, []);
-  const updateScoutGroup = useCallback(async (_id: string, _name: string) => {}, []);
-  const deleteScoutGroup = useCallback(async (_id: string) => {}, []);
-  const importScoutGroupsFromTemplate = useCallback(async (_templateId: string) => {}, []);
-
-  const createScoutGroupTemplate = useCallback(async (_name: string, _groups: string[]) => {}, []);
-  const deleteScoutGroupTemplate = useCallback(async (_id: string) => {}, []);
-  const saveCurrentGroupsAsTemplate = useCallback(async (_templateName: string) => {}, []);
-
+  // -------------------------
+  // computed helpers
+  // -------------------------
   const getPatrolsWithScores = useCallback(
     (section?: ScoutSection): PatrolWithScore[] => {
-      const filteredPatrols = section ? patrols.filter((p) => p.section === section) : patrols;
+      const filtered = section ? patrols.filter((p) => p.section === section) : patrols;
 
-      const patrolsWithScores: PatrolWithScore[] = filteredPatrols.map((patrol) => {
-        const patrolScores = scores.filter((s) => s.patrolId === patrol.id);
+      const result: PatrolWithScore[] = filtered.map((p) => {
         const stationScores: Record<string, number> = {};
         let totalScore = 0;
 
-        patrolScores.forEach((s) => {
-          stationScores[s.stationId] = s.score;
-          totalScore += s.score;
-        });
+        for (const st of stations) {
+          const v = getScore(p.id, st.id);
+          stationScores[st.id] = v;
+          totalScore += v;
+        }
 
-        return { ...patrol, totalScore, stationScores };
+        return { ...p, totalScore, stationScores };
       });
 
-      patrolsWithScores.sort((a, b) => b.totalScore - a.totalScore);
-      patrolsWithScores.forEach((p, idx) => (p.rank = idx + 1));
-      return patrolsWithScores;
+      result.sort((a, b) => b.totalScore - a.totalScore);
+      result.forEach((p, idx) => (p.rank = idx + 1));
+      return result;
     },
-    [patrols, scores]
+    [patrols, stations, getScore]
   );
 
   const getStationScores = useCallback(
     (stationId: string) => {
       return patrols
-        .map((patrol) => {
-          const scoreRecord = scores.find((s) => s.patrolId === patrol.id && s.stationId === stationId);
-          return { patrol, score: scoreRecord?.score ?? 0 };
-        })
+        .map((patrol) => ({ patrol, score: getScore(patrol.id, stationId) }))
         .sort((a, b) => b.score - a.score);
     },
-    [patrols, scores]
+    [patrols, getScore]
   );
 
   const getScoutGroupName = useCallback(
@@ -281,46 +828,53 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     [scoutGroups]
   );
 
-  const updateCompetition = useCallback((_updates: Partial<Competition>) => {}, []);
-
   return (
     <CompetitionContext.Provider
       value={{
         competitions,
         activeCompetitions,
         archivedCompetitions,
+
         competition,
         stations,
         patrols,
         scores,
         scoutGroups,
+
+        scoutGroupTemplates,
+
         createCompetition,
         selectCompetition,
         closeCompetition,
         reopenCompetition,
         deleteCompetition,
         updateCompetitionById,
+
         addStation,
         updateStation,
         deleteStation,
+
         addPatrol,
         updatePatrol,
         deletePatrol,
+
         addScoutGroup,
         updateScoutGroup,
         deleteScoutGroup,
         importScoutGroupsFromTemplate,
-        scoutGroupTemplates: (Array.isArray(scoutGroupTemplates) ? scoutGroupTemplates : []) as any,
-        createScoutGroupTemplate,
-        deleteScoutGroupTemplate,
+
         saveCurrentGroupsAsTemplate,
+        deleteScoutGroupTemplate,
+
         setScore,
         getScore,
         getScoreSaveState,
         retrySaveScore,
+
         getPatrolsWithScores,
         getStationScores,
         getScoutGroupName,
+
         updateCompetition,
       }}
     >
@@ -330,7 +884,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 }
 
 export function useCompetition() {
-  const context = useContext(CompetitionContext);
-  if (!context) throw new Error("useCompetition must be used within a CompetitionProvider");
-  return context;
+  const ctx = useContext(CompetitionContext);
+  if (!ctx) throw new Error("useCompetition must be used within a CompetitionProvider");
+  return ctx;
 }
