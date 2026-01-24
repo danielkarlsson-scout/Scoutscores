@@ -28,9 +28,9 @@ interface CompetitionContextType {
   // Competition management
   createCompetition: (data: { name: string; date: string }) => Promise<Competition>;
   selectCompetition: (id: string) => void;
-  closeCompetition: (id: string) => void;
-  reopenCompetition: (id: string) => void;
-  deleteCompetition: (id: string) => void;
+  closeCompetition: (id: string) => Promise<void>;
+  reopenCompetition: (id: string) => Promise<void>;
+  deleteCompetition: (id: string) => Promise<void>;
   updateCompetitionById: (id: string, updates: Partial<Competition>) => void;
 
   // Station actions
@@ -66,47 +66,32 @@ interface CompetitionContextType {
 
   // Competition actions
   updateCompetition: (updates: Partial<Competition>) => void;
+
+  // Optional: refresh competitions from DB (praktiskt efter admin-åtgärder)
+  refreshCompetitions: () => Promise<void>;
 }
 
 const CompetitionContext = createContext<CompetitionContextType | undefined>(undefined);
 
-const STORAGE_KEY = "scout-competitions-data";
 const SELECTED_KEY = "scout-selected-competition";
 const TEMPLATES_KEY = "scout-group-templates";
 
 const generateId = () => Math.random().toString(36).substring(2, 15);
 
 export function CompetitionProvider({ children }: { children: React.ReactNode }) {
-  const [competitions, setCompetitions] = useState<Competition[]>(() => {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      try {
-        return JSON.parse(stored);
-      } catch {
-        return [];
-      }
-    }
-    return [];
-  });
+  // ✅ Source of truth = DB
+  const [competitions, setCompetitions] = useState<Competition[]>([]);
 
   const [selectedId, setSelectedId] = useState<string | null>(() => {
     return localStorage.getItem(SELECTED_KEY);
   });
 
-  // Save to localStorage
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(competitions));
-  }, [competitions]);
-
-  useEffect(() => {
-    if (selectedId) {
-      localStorage.setItem(SELECTED_KEY, selectedId);
-    } else {
-      localStorage.removeItem(SELECTED_KEY);
-    }
+    if (selectedId) localStorage.setItem(SELECTED_KEY, selectedId);
+    else localStorage.removeItem(SELECTED_KEY);
   }, [selectedId]);
 
-  // Scout group templates
+  // Scout group templates (fortsatt lokalt)
   const [scoutGroupTemplates, setScoutGroupTemplates] = useState<ScoutGroupTemplate[]>(() => {
     const stored = localStorage.getItem(TEMPLATES_KEY);
     if (stored) {
@@ -119,10 +104,42 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     return [];
   });
 
-  // Save templates to localStorage
   useEffect(() => {
     localStorage.setItem(TEMPLATES_KEY, JSON.stringify(scoutGroupTemplates));
   }, [scoutGroupTemplates]);
+
+  // ✅ Hämta competitions från Supabase (så mobil funkar)
+  const refreshCompetitions = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("competitions")
+      .select("id,name,date,is_active,created_at")
+      .order("date", { ascending: true });
+
+    if (error) {
+      console.error("Failed to load competitions:", error);
+      setCompetitions([]);
+      return;
+    }
+
+    const mapped: Competition[] = (data ?? []).map((row: any) => ({
+      id: row.id,
+      name: row.name,
+      date: row.date,
+      status: row.is_active ? ("active" as CompetitionStatus) : ("closed" as CompetitionStatus),
+      stations: [], // DB-koppling kan göras senare
+      patrols: [],
+      scores: [],
+      scoutGroups: [],
+      createdAt: row.created_at ?? new Date().toISOString(),
+      closedAt: row.is_active ? undefined : row.created_at ?? new Date().toISOString(),
+    }));
+
+    setCompetitions(mapped);
+  }, []);
+
+  useEffect(() => {
+    refreshCompetitions();
+  }, [refreshCompetitions]);
 
   // Derived state
   const competition = competitions.find((c) => c.id === selectedId) ?? null;
@@ -182,19 +199,12 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     const name = data.name.trim();
     const date = data.date;
 
-    if (!name) {
-      throw new Error("Competition name is required");
-    }
+    if (!name) throw new Error("Competition name is required");
 
-    // 1) Create in Supabase (public.competitions)
     const { data: dbComp, error } = await supabase
       .from("competitions")
-      .insert({
-        name,
-        date,
-        is_active: true,
-      })
-      .select("id,name,date,is_active")
+      .insert({ name, date, is_active: true })
+      .select("id,name,date,is_active,created_at")
       .single();
 
     if (error || !dbComp) {
@@ -202,9 +212,8 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       throw error ?? new Error("Failed to create competition");
     }
 
-    // 2) Create local Competition object (app-model)
     const newCompetition: Competition = {
-      id: dbComp.id, // <-- DB UUID
+      id: dbComp.id,
       name: dbComp.name,
       date: dbComp.date,
       status: "active",
@@ -212,7 +221,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       patrols: [],
       scores: [],
       scoutGroups: [],
-      createdAt: new Date().toISOString(),
+      createdAt: dbComp.created_at ?? new Date().toISOString(),
     };
 
     setCompetitions((prev) => [...prev, newCompetition]);
@@ -225,17 +234,21 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     setSelectedId(id);
   }, []);
 
+  // ✅ DB: is_active = false när arkivera
   const closeCompetition = useCallback(
-    (id: string) => {
+    async (id: string) => {
+      const { error } = await supabase.from("competitions").update({ is_active: false }).eq("id", id);
+      if (error) {
+        console.error("Failed to close competition in DB:", error);
+        return;
+      }
+
       setCompetitions((prev) =>
         prev.map((c) =>
-          c.id === id
-            ? { ...c, status: "closed" as CompetitionStatus, closedAt: new Date().toISOString() }
-            : c
+          c.id === id ? { ...c, status: "closed" as CompetitionStatus, closedAt: new Date().toISOString() } : c
         )
       );
 
-      // If closing the selected competition, select another active one
       if (id === selectedId) {
         const remaining = competitions.filter((c) => c.id !== id && c.status === "active");
         setSelectedId(remaining[0]?.id ?? null);
@@ -244,17 +257,30 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     [competitions, selectedId]
   );
 
-  const reopenCompetition = useCallback((id: string) => {
+  // ✅ DB: is_active = true när återöppna
+  const reopenCompetition = useCallback(async (id: string) => {
+    const { error } = await supabase.from("competitions").update({ is_active: true }).eq("id", id);
+    if (error) {
+      console.error("Failed to reopen competition in DB:", error);
+      return;
+    }
+
     setCompetitions((prev) =>
-      prev.map((c) =>
-        c.id === id ? { ...c, status: "active" as CompetitionStatus, closedAt: undefined } : c
-      )
+      prev.map((c) => (c.id === id ? { ...c, status: "active" as CompetitionStatus, closedAt: undefined } : c))
     );
   }, []);
 
+  // ✅ DB: delete competition row (om du vill ha “riktig delete”)
   const deleteCompetition = useCallback(
-    (id: string) => {
+    async (id: string) => {
+      const { error } = await supabase.from("competitions").delete().eq("id", id);
+      if (error) {
+        console.error("Failed to delete competition in DB:", error);
+        return;
+      }
+
       setCompetitions((prev) => prev.filter((c) => c.id !== id));
+
       if (id === selectedId) {
         const remaining = competitions.filter((c) => c.id !== id && c.status === "active");
         setSelectedId(remaining[0]?.id ?? null);
@@ -263,19 +289,18 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     [competitions, selectedId]
   );
 
-  // Station actions
+  const updateCompetitionById = useCallback((id: string, updates: Partial<Competition>) => {
+    // OBS: den här uppdaterar bara lokal state. Om du vill DB-synka namn/datum också
+    // kan vi lägga till supabase.update här senare.
+    setCompetitions((prev) => prev.map((c) => (c.id === id ? { ...c, ...updates } : c)));
+  }, []);
+
+  // Station actions (fortfarande lokalt)
   const addStation = useCallback(
     (station: Omit<Station, "id" | "createdAt">) => {
       updateCurrentCompetition((comp) => ({
         ...comp,
-        stations: [
-          ...comp.stations,
-          {
-            ...station,
-            id: generateId(),
-            createdAt: new Date().toISOString(),
-          },
-        ],
+        stations: [...comp.stations, { ...station, id: generateId(), createdAt: new Date().toISOString() }],
       }));
     },
     [updateCurrentCompetition]
@@ -302,19 +327,12 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     [updateCurrentCompetition]
   );
 
-  // Patrol actions
+  // Patrol actions (fortfarande lokalt)
   const addPatrol = useCallback(
     (patrol: Omit<Patrol, "id" | "createdAt">) => {
       updateCurrentCompetition((comp) => ({
         ...comp,
-        patrols: [
-          ...comp.patrols,
-          {
-            ...patrol,
-            id: generateId(),
-            createdAt: new Date().toISOString(),
-          },
-        ],
+        patrols: [...comp.patrols, { ...patrol, id: generateId(), createdAt: new Date().toISOString() }],
       }));
     },
     [updateCurrentCompetition]
@@ -341,7 +359,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     [updateCurrentCompetition]
   );
 
-  // Score actions
+  // Score actions (lokalt)
   const setScore = useCallback(
     (patrolId: string, stationId: string, score: number) => {
       updateCurrentCompetition((comp) => {
@@ -390,11 +408,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
           totalScore += s.score;
         });
 
-        return {
-          ...patrol,
-          totalScore,
-          stationScores,
-        };
+        return { ...patrol, totalScore, stationScores };
       });
 
       patrolsWithScores.sort((a, b) => b.totalScore - a.totalScore);
@@ -412,10 +426,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       return patrols
         .map((patrol) => {
           const scoreRecord = scores.find((s) => s.patrolId === patrol.id && s.stationId === stationId);
-          return {
-            patrol,
-            score: scoreRecord?.score ?? 0,
-          };
+          return { patrol, score: scoreRecord?.score ?? 0 };
         })
         .sort((a, b) => b.score - a.score);
     },
@@ -429,10 +440,6 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     [updateCurrentCompetition]
   );
 
-  const updateCompetitionById = useCallback((id: string, updates: Partial<Competition>) => {
-    setCompetitions((prev) => prev.map((c) => (c.id === id ? { ...c, ...updates } : c)));
-  }, []);
-
   // ✅ Scout Group actions (DB-kopplade)
   const addScoutGroup = useCallback(
     async (name: string) => {
@@ -442,10 +449,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
       const { data, error } = await supabase
         .from("scout_groups")
-        .insert({
-          name: trimmed,
-          competition_id: selectedId,
-        })
+        .insert({ name: trimmed, competition_id: selectedId })
         .select("id,name,created_at")
         .single();
 
@@ -517,12 +521,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   const createScoutGroupTemplate = useCallback((name: string, groups: string[]) => {
     setScoutGroupTemplates((prev) => [
       ...prev,
-      {
-        id: generateId(),
-        name: name.trim(),
-        groups,
-        createdAt: new Date().toISOString(),
-      },
+      { id: generateId(), name: name.trim(), groups, createdAt: new Date().toISOString() },
     ]);
   }, []);
 
@@ -533,9 +532,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   const saveCurrentGroupsAsTemplate = useCallback(
     (templateName: string) => {
       const groupNames = scoutGroups.map((g) => g.name);
-      if (groupNames.length > 0) {
-        createScoutGroupTemplate(templateName, groupNames);
-      }
+      if (groupNames.length > 0) createScoutGroupTemplate(templateName, groupNames);
     },
     [scoutGroups, createScoutGroupTemplate]
   );
@@ -547,20 +544,13 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       const template = scoutGroupTemplates.find((t) => t.id === templateId);
       if (!template) return;
 
-      // Filtrera bort namn som redan finns lokalt
       const existingNames = new Set((scoutGroups ?? []).map((g) => g.name.toLowerCase()));
       const namesToAdd = template.groups.filter((n) => !existingNames.has(n.toLowerCase()));
       if (namesToAdd.length === 0) return;
 
-      const rowsToInsert = namesToAdd.map((name) => ({
-        name,
-        competition_id: selectedId,
-      }));
+      const rowsToInsert = namesToAdd.map((name) => ({ name, competition_id: selectedId }));
 
-      const { data, error } = await supabase
-        .from("scout_groups")
-        .insert(rowsToInsert)
-        .select("id,name,created_at");
+      const { data, error } = await supabase.from("scout_groups").insert(rowsToInsert).select("id,name,created_at");
 
       if (error) {
         console.error("Kunde inte importera kårer från mall:", error);
@@ -618,6 +608,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
         getStationScores,
         getScoutGroupName,
         updateCompetition,
+        refreshCompetitions,
       }}
     >
       {children}
@@ -627,8 +618,6 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
 export function useCompetition() {
   const context = useContext(CompetitionContext);
-  if (context === undefined) {
-    throw new Error("useCompetition must be used within a CompetitionProvider");
-  }
+  if (context === undefined) throw new Error("useCompetition must be used within a CompetitionProvider");
   return context;
 }
