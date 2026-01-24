@@ -305,9 +305,12 @@ export default function Scoring() {
                       className="flex items-center gap-4 py-2 border-b last:border-0"
                     >
                       <div className="flex-1 min-w-0">
-                        <p className="font-medium truncate">{patrol.name}</p>
-                        <SectionBadge section={patrol.section} size="sm" />
-                      </div>
+  {/* Mobil: visa hela namnet (wrap). Desktop: kan fortfarande kapa om du vill */}
+  <p className="font-medium whitespace-normal break-words sm:whitespace-nowrap sm:truncate">
+    {patrol.name}
+  </p>
+  <SectionBadge section={patrol.section} size="sm" />
+</div>
 
                       {/* STATUS + RETRY */}
                       <div className="w-28 flex justify-end">
