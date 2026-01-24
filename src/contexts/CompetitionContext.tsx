@@ -680,72 +680,119 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   );
 
   // Scores (DB + optimistic UI + save state)
-  const setScore = useCallback(
-    async (patrolId: string, stationId: string, score: number) => {
-      if (!selectedId) return;
+const setScore = useCallback(
+  async (patrolId: string, stationId: string, score: number) => {
+    if (!selectedId) return;
 
-      const key = `${selectedId}:${patrolId}:${stationId}`;
+    const key = `${selectedId}:${patrolId}:${stationId}`;
+    const nowIso = new Date().toISOString();
 
-      // 1) optimistic update in local state
+    // 1) optimistic update in local state
+    updateCurrentCompetition((comp) => {
+      const existingIndex = comp.scores.findIndex(
+        (s) => s.patrolId === patrolId && s.stationId === stationId
+      );
+
+      const newScore: Score = {
+        id: existingIndex >= 0 ? comp.scores[existingIndex].id : generateId(),
+        patrolId,
+        stationId,
+        score,
+        updatedAt: nowIso,
+      };
+
+      if (existingIndex >= 0) {
+        const next = [...comp.scores];
+        next[existingIndex] = newScore;
+        return { ...comp, scores: next };
+      }
+
+      return { ...comp, scores: [...comp.scores, newScore] };
+    });
+
+    // 2) set saving state
+    setScoreSaveState((prev) => ({ ...prev, [key]: "saving" }));
+
+    // 3) upsert to DB
+    const payload = {
+      competition_id: selectedId,
+      patrol_id: patrolId,
+      station_id: stationId,
+      score,
+      updated_at: nowIso,
+    };
+
+    const { data, error } = await supabase
+      .from("scores")
+      .upsert(payload, { onConflict: "competition_id,patrol_id,station_id" })
+      .select("id,competition_id,patrol_id,station_id,score,updated_at") // ger bättre info vid debug
+      .maybeSingle();
+
+    if (error) {
+      // 🔥 Här får du den riktiga orsaken (RLS/trigger/etc)
+      console.error("❌ Failed to save score:", {
+        message: error.message,
+        details: (error as any).details,
+        hint: (error as any).hint,
+        code: (error as any).code,
+        payload,
+      });
+
+      setScoreSaveState((prev) => ({ ...prev, [key]: "error" }));
+
+      // 🧯 Rollback: ladda om scores från DB så UI inte visar felaktigt
+      // (robust när RLS/trigger blockar)
+      const { data: fresh, error: freshErr } = await supabase
+        .from("scores")
+        .select("id,competition_id,patrol_id,station_id,score,updated_at")
+        .eq("competition_id", selectedId);
+
+      if (freshErr) {
+        console.error("⚠️ Failed to refresh scores after save error:", freshErr);
+        return;
+      }
+
+      updateCurrentCompetition((comp) => ({
+        ...comp,
+        scores: (fresh ?? []).map(mapScoreRow),
+      }));
+
+      return;
+    }
+
+    // 4) Om DB returnerade raden: synka id/updatedAt korrekt (viktigt om trigger sätter updated_at)
+    if (data) {
       updateCurrentCompetition((comp) => {
         const existingIndex = comp.scores.findIndex(
           (s) => s.patrolId === patrolId && s.stationId === stationId
         );
 
-        const newScore: Score = {
-          id: existingIndex >= 0 ? comp.scores[existingIndex].id : generateId(),
-          patrolId,
-          stationId,
-          score,
-          updatedAt: new Date().toISOString(),
+        const synced: Score = {
+          id: data.id,
+          patrolId: data.patrol_id,
+          stationId: data.station_id,
+          score: data.score ?? 0,
+          updatedAt: data.updated_at ?? nowIso,
         };
 
         if (existingIndex >= 0) {
           const next = [...comp.scores];
-          next[existingIndex] = newScore;
+          next[existingIndex] = synced;
           return { ...comp, scores: next };
         }
 
-        return { ...comp, scores: [...comp.scores, newScore] };
+        return { ...comp, scores: [...comp.scores, synced] };
       });
+    }
 
-      // 2) set saving state
-      setScoreSaveState((prev) => ({ ...prev, [key]: "saving" }));
-
-      // 3) upsert to DB
-      const { error } = await supabase.from("scores").upsert(
-        {
-          competition_id: selectedId,
-          patrol_id: patrolId,
-          station_id: stationId,
-          score,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "competition_id,patrol_id,station_id" }
-      );
-
-      if (error) {
-        console.error("Failed to save score:", error);
-        setScoreSaveState((prev) => ({ ...prev, [key]: "error" }));
-        return;
-      }
-
-      // 4) saved -> back to idle
-      setScoreSaveState((prev) => ({ ...prev, [key]: "saved" }));
-      window.setTimeout(() => {
-        setScoreSaveState((prev) => ({ ...prev, [key]: "idle" }));
-      }, 1200);
-    },
-    [selectedId, updateCurrentCompetition]
-  );
-
-  const getScore = useCallback(
-    (patrolId: string, stationId: string) => {
-      const scoreRecord = scores.find((s) => s.patrolId === patrolId && s.stationId === stationId);
-      return scoreRecord?.score ?? 0;
-    },
-    [scores]
-  );
+    // 5) saved -> back to idle
+    setScoreSaveState((prev) => ({ ...prev, [key]: "saved" }));
+    window.setTimeout(() => {
+      setScoreSaveState((prev) => ({ ...prev, [key]: "idle" }));
+    }, 1200);
+  },
+  [selectedId, updateCurrentCompetition]
+);
 
   // Computed
   const getPatrolsWithScores = useCallback(
