@@ -152,14 +152,9 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   // For optimistic scoring + status
   const [scoreOverrides, setScoreOverrides] = useState<Map<string, number>>(new Map());
   const [scoreSaveState, setScoreSaveState] = useState<Map<string, SaveState>>(new Map());
-  const [pendingRetry, setPendingRetry] = useState<
-    Map<string, { patrolId: string; stationId: string; score: number }>
-  >(new Map());
+  const [pendingRetry, setPendingRetry] = useState<Map<string, { patrolId: string; stationId: string; score: number }>>(new Map());
 
-  const competition = useMemo(
-    () => competitions.find((c) => c.id === selectedId) ?? null,
-    [competitions, selectedId]
-  );
+  const competition = useMemo(() => competitions.find((c) => c.id === selectedId) ?? null, [competitions, selectedId]);
   const activeCompetitions = useMemo(() => competitions.filter((c) => c.status === "active"), [competitions]);
   const archivedCompetitions = useMemo(() => competitions.filter((c) => c.status === "closed"), [competitions]);
 
@@ -317,29 +312,32 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
   const selectCompetition = useCallback((id: string) => setSelectedId(id), []);
 
-  const closeCompetition = useCallback(
-    async (id: string) => {
-      const closedAt = new Date().toISOString();
+  const closeCompetition = useCallback(async (id: string) => {
+    const closedAt = new Date().toISOString();
 
-      const { error } = await supabase.from("competitions").update({ is_active: false, closed_at: closedAt }).eq("id", id);
+    const { error } = await supabase
+      .from("competitions")
+      .update({ is_active: false, closed_at: closedAt })
+      .eq("id", id);
 
-      if (error) {
-        console.error("Failed to close competition:", error);
-        return;
-      }
+    if (error) {
+      console.error("Failed to close competition:", error);
+      return;
+    }
 
-      setCompetitions((prev) => prev.map((c) => (c.id === id ? { ...c, status: "closed", closedAt } : c)));
+    setCompetitions((prev) => prev.map((c) => (c.id === id ? { ...c, status: "closed", closedAt } : c)));
 
-      if (id === selectedId) {
-        const remaining = competitions.filter((c) => c.id !== id && c.status === "active");
-        setSelectedId(remaining[0]?.id ?? null);
-      }
-    },
-    [competitions, selectedId]
-  );
+    if (id === selectedId) {
+      const remaining = competitions.filter((c) => c.id !== id && c.status === "active");
+      setSelectedId(remaining[0]?.id ?? null);
+    }
+  }, [competitions, selectedId]);
 
   const reopenCompetition = useCallback(async (id: string) => {
-    const { error } = await supabase.from("competitions").update({ is_active: true, closed_at: null }).eq("id", id);
+    const { error } = await supabase
+      .from("competitions")
+      .update({ is_active: true, closed_at: null })
+      .eq("id", id);
 
     if (error) {
       console.error("Failed to reopen competition:", error);
@@ -349,19 +347,16 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     setCompetitions((prev) => prev.map((c) => (c.id === id ? { ...c, status: "active", closedAt: undefined } : c)));
   }, []);
 
-  const deleteCompetition = useCallback(
-    async (id: string) => {
-      const { error } = await supabase.from("competitions").delete().eq("id", id);
-      if (error) {
-        console.error("Failed to delete competition:", error);
-        return;
-      }
+  const deleteCompetition = useCallback(async (id: string) => {
+    const { error } = await supabase.from("competitions").delete().eq("id", id);
+    if (error) {
+      console.error("Failed to delete competition:", error);
+      return;
+    }
 
-      setCompetitions((prev) => prev.filter((c) => c.id !== id));
-      if (id === selectedId) setSelectedId(null);
-    },
-    [selectedId]
-  );
+    setCompetitions((prev) => prev.filter((c) => c.id !== id));
+    if (id === selectedId) setSelectedId(null);
+  }, [selectedId]);
 
   const updateCompetitionById = useCallback((id: string, updates: Partial<Competition>) => {
     setCompetitions((prev) => prev.map((c) => (c.id === id ? { ...c, ...updates } : c)));
@@ -411,7 +406,9 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       }
 
       const newStation = mapDbStation(data);
-      setCompetitions((prev) => prev.map((c) => (c.id === selectedId ? { ...c, stations: [...c.stations, newStation] } : c)));
+      setCompetitions((prev) =>
+        prev.map((c) => (c.id === selectedId ? { ...c, stations: [...c.stations, newStation] } : c))
+      );
     },
     [selectedId]
   );
@@ -436,7 +433,9 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
       setCompetitions((prev) =>
         prev.map((c) =>
-          c.id === selectedId ? { ...c, stations: c.stations.map((s) => (s.id === id ? { ...s, ...updates } : s)) } : c
+          c.id === selectedId
+            ? { ...c, stations: c.stations.map((s) => (s.id === id ? { ...s, ...updates } : s)) }
+            : c
         )
       );
     },
@@ -456,7 +455,11 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       setCompetitions((prev) =>
         prev.map((c) =>
           c.id === selectedId
-            ? { ...c, stations: c.stations.filter((s) => s.id !== id), scores: c.scores.filter((sc) => sc.stationId !== id) }
+            ? {
+                ...c,
+                stations: c.stations.filter((s) => s.id !== id),
+                scores: c.scores.filter((sc) => sc.stationId !== id),
+              }
             : c
         )
       );
@@ -489,7 +492,9 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       }
 
       const newPatrol = mapDbPatrol(data);
-      setCompetitions((prev) => prev.map((c) => (c.id === selectedId ? { ...c, patrols: [...c.patrols, newPatrol] } : c)));
+      setCompetitions((prev) =>
+        prev.map((c) => (c.id === selectedId ? { ...c, patrols: [...c.patrols, newPatrol] } : c))
+      );
     },
     [selectedId]
   );
@@ -511,7 +516,11 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       }
 
       setCompetitions((prev) =>
-        prev.map((c) => (c.id === selectedId ? { ...c, patrols: c.patrols.map((p) => (p.id === id ? { ...p, ...updates } : p)) } : c))
+        prev.map((c) =>
+          c.id === selectedId
+            ? { ...c, patrols: c.patrols.map((p) => (p.id === id ? { ...p, ...updates } : p)) }
+            : c
+        )
       );
     },
     [selectedId]
@@ -530,7 +539,11 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       setCompetitions((prev) =>
         prev.map((c) =>
           c.id === selectedId
-            ? { ...c, patrols: c.patrols.filter((p) => p.id !== id), scores: c.scores.filter((sc) => sc.patrolId !== id) }
+            ? {
+                ...c,
+                patrols: c.patrols.filter((p) => p.id !== id),
+                scores: c.scores.filter((sc) => sc.patrolId !== id),
+              }
             : c
         )
       );
@@ -560,7 +573,9 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
       const newGroup = mapDbScoutGroup(data);
 
-      setCompetitions((prev) => prev.map((c) => (c.id === selectedId ? { ...c, scoutGroups: [...c.scoutGroups, newGroup] } : c)));
+      setCompetitions((prev) =>
+        prev.map((c) => (c.id === selectedId ? { ...c, scoutGroups: [...c.scoutGroups, newGroup] } : c))
+      );
     },
     [selectedId]
   );
@@ -578,7 +593,9 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
       setCompetitions((prev) =>
         prev.map((c) =>
-          c.id === selectedId ? { ...c, scoutGroups: c.scoutGroups.map((g) => (g.id === id ? { ...g, name: trimmed } : g)) } : c
+          c.id === selectedId
+            ? { ...c, scoutGroups: c.scoutGroups.map((g) => (g.id === id ? { ...g, name: trimmed } : g)) }
+            : c
         )
       );
     },
@@ -659,7 +676,10 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
       const rowsToInsert = namesToAdd.map((name) => ({ name, competition_id: selectedId }));
 
-      const { data, error } = await supabase.from("scout_groups").insert(rowsToInsert).select("id,competition_id,name,created_at");
+      const { data, error } = await supabase
+        .from("scout_groups")
+        .insert(rowsToInsert)
+        .select("id,competition_id,name,created_at");
 
       if (error) {
         console.error("Kunde inte importera kårer från mall:", error);
@@ -676,7 +696,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   );
 
   // -------------------------
-  // scoring (DB upsert) ✅ FIXED (explicit payload, single persistScore)
+  // scoring (DB upsert) — robust variant
   // -------------------------
   const getScore = useCallback(
     (patrolId: string, stationId: string) => {
@@ -704,75 +724,108 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       const key = scoreKey(patrolId, stationId);
       setScoreSaveState((prev) => new Map(prev).set(key, "saving"));
 
-      // ✅ explicit payload (no spread) => cannot get duplicate keys
-      const payload = {
-        competition_id: selectedId,
-        patrol_id: patrolId,
-        station_id: stationId,
-        score,
-        updated_at: new Date().toISOString(),
-      };
+      // Try upsert with onConflict (works when unique constraint present)
+      try {
+        const { data, error } = await supabase
+          .from("scores")
+          .upsert(
+            {
+              competition_id: selectedId,
+              patrol_id: patrolId,
+              station_id: stationId,
+              score,
+              updated_at: new Date().toISOString(),
+            },
+            {
+              onConflict: "competition_id,patrol_id,station_id",
+            }
+          )
+          // request returning row; sometimes DB/REPL/Policies block returning — fallback below handles that
+          .select("id,competition_id,patrol_id,station_id,score,updated_at")
+          .single();
 
-      const { data, error } = await supabase
-        .from("scores")
-        .upsert(payload, { onConflict: "competition_id,patrol_id,station_id" })
-        .select("id,patrol_id,station_id,score,updated_at")
-        .single();
+        if (error) {
+          // Log and handle below
+          console.warn("Upsert returned error:", error);
+          throw error;
+        }
 
-      if (error || !data) {
-        console.error("Failed to save score:", error);
-        setScoreSaveState((prev) => new Map(prev).set(key, "error"));
-        setPendingRetry((prev) => new Map(prev).set(key, { patrolId, stationId, score }));
-        return;
+        if (data) {
+          // use returned row
+          const saved = mapDbScore(data);
+
+          setCompetitions((prev) =>
+            prev.map((c) =>
+              c.id === selectedId
+                ? {
+                    ...c,
+                    scores: [
+                      ...c.scores.filter((s) => !(s.patrolId === patrolId && s.stationId === stationId)),
+                      saved,
+                    ],
+                  }
+                : c
+            )
+          );
+
+          setScoreSaveState((prev) => new Map(prev).set(key, "saved"));
+          // cleanup overrides & pending retry
+          setPendingRetry((prev) => {
+            const next = new Map(prev);
+            next.delete(key);
+            return next;
+          });
+          setScoreOverrides((prev) => {
+            const next = new Map(prev);
+            next.delete(key);
+            return next;
+          });
+
+          // optional: fade saved -> idle
+          setTimeout(() => {
+            setScoreSaveState((prev) => {
+              const next = new Map(prev);
+              if (next.get(key) === "saved") next.set(key, "idle");
+              return next;
+            });
+          }, 1200);
+          return;
+        }
+      } catch (err) {
+        // fall through to fallback handling below
+        // log to console for debugging
+        console.error("Persist score upsert failed:", err);
       }
 
-      const saved: Score = {
-        id: data.id,
-        patrolId: data.patrol_id,
-        stationId: data.station_id,
-        score: data.score,
-        updatedAt: data.updated_at ?? new Date().toISOString(),
-      };
+      // If we reach here: upsert failed or didn't return data.
+      // -> Keep optimistic UI, mark as error and keep pendingRetry so user can retry.
+      setScoreSaveState((prev) => new Map(prev).set(key, "error"));
+      setPendingRetry((prev) => new Map(prev).set(key, { patrolId, stationId, score }));
 
+      // Also update local state optimistically so UI shows the value even if DB didn't accept it.
       setCompetitions((prev) =>
         prev.map((c) => {
           if (c.id !== selectedId) return c;
 
-          const idx = c.scores.findIndex((s) => s.patrolId === patrolId && s.stationId === stationId);
-          if (idx >= 0) {
-            const nextScores = [...c.scores];
-            nextScores[idx] = saved;
-            return { ...c, scores: nextScores };
+          const existingIdx = c.scores.findIndex((s) => s.patrolId === patrolId && s.stationId === stationId);
+
+          const saved: Score = {
+            id: existingIdx >= 0 ? c.scores[existingIdx].id : crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+            patrolId,
+            stationId,
+            score,
+            updatedAt: new Date().toISOString(),
+          };
+
+          if (existingIdx >= 0) {
+            const next = [...c.scores];
+            next[existingIdx] = saved;
+            return { ...c, scores: next };
           }
 
           return { ...c, scores: [...c.scores, saved] };
         })
       );
-
-      setScoreSaveState((prev) => new Map(prev).set(key, "saved"));
-
-      // clear pending retry on success
-      setPendingRetry((prev) => {
-        const next = new Map(prev);
-        next.delete(key);
-        return next;
-      });
-
-      // clear optimistic override on success (DB is now source of truth)
-      setScoreOverrides((prev) => {
-        const next = new Map(prev);
-        next.delete(key);
-        return next;
-      });
-
-      // back to idle after a moment
-      setTimeout(() => {
-        setScoreSaveState((prev) => {
-          const next = new Map(prev);
-          if (next.get(key) === "saved") next.set(key, "idle");
-          return next;
-        });
-      }, 1200);
     },
     [selectedId]
   );
@@ -795,9 +848,10 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       const pending = pendingRetry.get(key);
       if (!pending) return;
 
-      // keep optimistic in sync
+      // keep optimistic value in sync
       setScoreOverrides((prev) => new Map(prev).set(key, pending.score));
-
+      // mark saving (UI)
+      setScoreSaveState((prev) => new Map(prev).set(key, "saving"));
       await persistScore(patrolId, stationId, pending.score);
     },
     [pendingRetry, persistScore]
@@ -831,7 +885,9 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   );
 
   const getStationScores = useCallback(
-    (stationId: string) => patrols.map((patrol) => ({ patrol, score: getScore(patrol.id, stationId) })).sort((a, b) => b.score - a.score),
+    (stationId: string) => {
+      return patrols.map((patrol) => ({ patrol, score: getScore(patrol.id, stationId) })).sort((a, b) => b.score - a.score);
+    },
     [patrols, getScore]
   );
 
