@@ -35,7 +35,7 @@ interface UserWithRoles {
   displayName: string | null;
   isAdmin: boolean;
   isScorer: boolean;
-  sections: ScoutSection[];
+  permissions: { competition_id: string; section: ScoutSection }[];
 }
 
 interface PermissionRequest {
@@ -63,8 +63,9 @@ export default function Admin() {
   const fetchUsers = async () => {
     try {
       // Fetch all profiles
-      const { data: profiles, error: profilesError } = await queryTable('profiles')
-        .select('user_id, email, display_name');
+      const { data: permissions, error: permissionsError } = await queryTable('scorer_permissions')
+  .select('user_id, competition_id, section');
+if (permissionsError) throw permissionsError;
 
       if (profilesError) throw profilesError;
 
@@ -85,14 +86,17 @@ export default function Admin() {
         const userRoles = roles?.filter((r: any) => r.user_id === profile.user_id) ?? [];
         const userPermissions = permissions?.filter((p: any) => p.user_id === profile.user_id) ?? [];
 
-        return {
-          userId: profile.user_id,
-          email: profile.email,
-          displayName: profile.display_name,
-          isAdmin: userRoles.some((r: any) => r.role === 'admin'),
-          isScorer: userRoles.some((r: any) => r.role === 'scorer'),
-          sections: userPermissions.map((p: any) => p.section as ScoutSection),
-        };
+return {
+  userId: profile.user_id,
+  email: profile.email,
+  displayName: profile.display_name,
+  isAdmin: userRoles.some((r: any) => r.role === 'admin'),
+  isScorer: userRoles.some((r: any) => r.role === 'scorer'),
+  permissions: userPermissions.map((p: any) => ({
+    competition_id: p.competition_id,
+    section: p.section as ScoutSection,
+  })),
+};
       });
 
       setUsers(usersWithRoles);
@@ -118,6 +122,7 @@ export default function Admin() {
       if (error) throw error;
 
       const allCompetitions = [...activeCompetitions, ...archivedCompetitions];
+const [selectedCompetitionId, setSelectedCompetitionId] = useState<string>('');
 
       // Enrich with user info and competition name
       const enrichedRequests: PermissionRequest[] = (data ?? []).map((req: any) => {
@@ -145,10 +150,10 @@ export default function Admin() {
   };
 
   useEffect(() => {
-    if (isAdmin) {
-      fetchAll();
-    }
-  }, [isAdmin]);
+  if (!selectedCompetitionId && activeCompetitions?.length) {
+    setSelectedCompetitionId(activeCompetitions[0].id);
+  }
+}, [activeCompetitions, selectedCompetitionId]);
 
   const handleApproveRequest = async (request: PermissionRequest) => {
     setProcessingRequest(request.id);
@@ -162,7 +167,14 @@ export default function Admin() {
 
       // Add section permission
       await queryTable('scorer_permissions')
-        .upsert({ user_id: request.user_id, section: request.section });
+  .upsert(
+    {
+      user_id: request.user_id,
+      competition_id: request.competition_id,
+      section: request.section,
+    },
+    { onConflict: 'user_id,competition_id,section' }
+  );
 
       // Update request status
       await queryTable('permission_requests')
@@ -264,19 +276,21 @@ export default function Admin() {
   };
 
   const toggleSectionPermission = async (user: UserWithRoles, section: ScoutSection) => {
+  if (!selectedCompetitionId) return;
     setSaving(user.userId);
     try {
       const hasSection = user.sections.includes(section);
 
       if (hasSection) {
-        await queryTable('scorer_permissions')
-          .delete()
-          .eq('user_id', user.userId)
-          .eq('section', section);
-      } else {
-        await queryTable('scorer_permissions')
-          .insert({ user_id: user.userId, section });
-      }
+  await queryTable('scorer_permissions')
+    .delete()
+    .eq('user_id', user.userId)
+    .eq('competition_id', selectedCompetitionId)
+    .eq('section', section);
+} else {
+  await queryTable('scorer_permissions')
+    .insert({ user_id: user.userId, competition_id: selectedCompetitionId, section });
+}
       await fetchAll();
       toast({ title: 'Behörighet uppdaterad' });
     } catch (error) {
@@ -454,6 +468,20 @@ export default function Admin() {
               Inga registrerade användare.
             </p>
           ) : (
+      <div className="flex items-center gap-3 mb-4">
+  <span className="text-sm text-muted-foreground">Tävling:</span>
+  <select
+    className="border rounded-md px-3 py-2 text-sm bg-background"
+    value={selectedCompetitionId}
+    onChange={(e) => setSelectedCompetitionId(e.target.value)}
+  >
+    {allCompetitions.map(c => (
+      <option key={c.id} value={c.id}>
+        {c.name}
+      </option>
+    ))}
+  </select>
+</div>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -500,7 +528,7 @@ export default function Admin() {
                               variant="outline"
                               className={cn(
                                 "cursor-pointer border transition-colors",
-                                user.sections.includes(section) 
+                                user.permissions.some(p => p.competition_id === selectedCompetitionId && p.section === section)
                                   ? sectionColors[section]
                                   : sectionOutlineColors[section]
                               )}
