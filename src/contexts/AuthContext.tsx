@@ -1,161 +1,172 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { Session, User } from '@supabase/supabase-js';
+import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { supabase } from '@/integrations/supabase/client';
+import type { User, Session } from '@supabase/supabase-js';
 import type { ScoutSection } from '@/types/competition';
 
-type Role = 'admin' | 'scorer';
+export type AppRole = 'admin' | 'scorer';
 
-export type ScorerPermission = {
-  competitionId: string;
-  section: ScoutSection;
-};
-
-type AuthContextType = {
-  session: Session | null;
+interface AuthContextType {
   user: User | null;
+  session: Session | null;
   loading: boolean;
-
-  roles: Role[];
   isAdmin: boolean;
   isScorer: boolean;
-
-  scorerPermissions: ScorerPermission[];
-
-  // Optional helper (uses competitionId when supplied)
-  canScoreSection: (section: ScoutSection, competitionId?: string) => boolean;
-
+  scorerSections: ScoutSection[];
+  signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
+  signUp: (email: string, password: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
-};
+  canScoreSection: (section: ScoutSection) => boolean;
+  refreshRoles: () => Promise<void>;
+}
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null);
+// Helper to query tables that may not be in types yet
+const queryTable = (tableName: string) => {
+  return (supabase as any).from(tableName);
+};
+
+export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [isScorer, setIsScorer] = useState(false);
+  const [scorerSections, setScorerSections] = useState<ScoutSection[]>([]);
 
-  const [roles, setRoles] = useState<Role[]>([]);
-  const [scorerPermissions, setScorerPermissions] = useState<ScorerPermission[]>([]);
+  const fetchRoles = async (userId: string) => {
+    try {
+      // Fetch user roles
+      const { data: roles } = await queryTable('user_roles')
+        .select('role')
+        .eq('user_id', userId);
 
-  const isAdmin = useMemo(() => roles.includes('admin'), [roles]);
-  const isScorer = useMemo(() => roles.includes('scorer'), [roles]);
+      const hasAdmin = roles?.some((r: any) => r.role === 'admin') ?? false;
+      const hasScorer = roles?.some((r: any) => r.role === 'scorer') ?? false;
 
-  const fetchUserData = async (u: User) => {
-    // Roles
-    const { data: rolesData, error: rolesError } = await (supabase as any)
-      .from('user_roles')
-      .select('role')
-      .eq('user_id', u.id);
+      setIsAdmin(hasAdmin);
+      setIsScorer(hasScorer);
 
-    if (!rolesError) {
-      const r = (rolesData ?? [])
-        .map((x: any) => x.role as Role)
-        .filter(Boolean);
-      setRoles(r);
-    } else {
-      setRoles([]);
+      // Fetch scorer permissions
+      if (hasScorer || hasAdmin) {
+        const { data: permissions } = await queryTable('scorer_permissions')
+          .select('section')
+          .eq('user_id', userId);
+
+        setScorerSections((permissions?.map((p: any) => p.section as ScoutSection)) ?? []);
+      } else {
+        setScorerSections([]);
+      }
+    } catch (error) {
+      console.error('Error fetching roles:', error);
     }
+  };
 
-    // Scorer permissions (competition_id + section)
-    const { data: permData, error: permError } = await (supabase as any)
-      .from('scorer_permissions')
-      .select('competition_id, section')
-      .eq('user_id', u.id);
-
-    if (!permError) {
-      const perms: ScorerPermission[] = (permData ?? [])
-        .filter((p: any) => p?.competition_id && p?.section)
-        .map((p: any) => ({
-          competitionId: p.competition_id as string,
-          section: p.section as ScoutSection,
-        }));
-      setScorerPermissions(perms);
-    } else {
-      setScorerPermissions([]);
+  const refreshRoles = async () => {
+    if (user) {
+      await fetchRoles(user.id);
     }
   };
 
   useEffect(() => {
-    let mounted = true;
+    // Set up auth state listener BEFORE checking session
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        setSession(session);
+        setUser(session?.user ?? null);
 
-    const init = async () => {
-      setLoading(true);
-      const { data } = await supabase.auth.getSession();
-      if (!mounted) return;
+        if (session?.user) {
+          // Use setTimeout to avoid deadlock with Supabase client
+          setTimeout(() => fetchRoles(session.user.id), 0);
+        } else {
+          setIsAdmin(false);
+          setIsScorer(false);
+          setScorerSections([]);
+        }
 
-      setSession(data.session ?? null);
-      setUser(data.session?.user ?? null);
+        setLoading(false);
+      }
+    );
 
-      if (data.session?.user) {
-        await fetchUserData(data.session.user);
-      } else {
-        setRoles([]);
-        setScorerPermissions([]);
+    // Check for existing session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setUser(session?.user ?? null);
+
+      if (session?.user) {
+        fetchRoles(session.user.id);
       }
 
       setLoading(false);
-    };
-
-    init();
-
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
-      if (!mounted) return;
-
-      setSession(newSession);
-      setUser(newSession?.user ?? null);
-
-      if (newSession?.user) {
-        setLoading(true);
-        await fetchUserData(newSession.user);
-        setLoading(false);
-      } else {
-        setRoles([]);
-        setScorerPermissions([]);
-      }
     });
 
-    return () => {
-      mounted = false;
-      sub.subscription.unsubscribe();
-    };
+    return () => subscription.unsubscribe();
   }, []);
 
-  const canScoreSection = (section: ScoutSection, competitionId?: string) => {
-    if (isAdmin) return true;
-    if (!isScorer) return false;
+  const signIn = async (email: string, password: string) => {
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+    return { error };
+  };
 
-    if (!competitionId) {
-      // If no competition is provided, allow if user has any permission for the section in any competition
-      return scorerPermissions.some((p) => p.section === section);
-    }
+  // ✅ UPPDATERAD: alltid rätt redirect för verifieringsmail
+  const signUp = async (email: string, password: string) => {
+    const redirectTo =
+      import.meta.env.PROD
+        ? 'https://scoutscores.vercel.app/verify-email'
+        : 'http://localhost:5173/verify-email';
 
-    return scorerPermissions.some((p) => p.competitionId === competitionId && p.section === section);
+    const { error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        emailRedirectTo: redirectTo,
+      },
+    });
+
+    return { error };
   };
 
   const signOut = async () => {
     await supabase.auth.signOut();
+    setIsAdmin(false);
+    setIsScorer(false);
+    setScorerSections([]);
   };
 
-  const value: AuthContextType = {
-    session,
-    user,
-    loading,
-
-    roles,
-    isAdmin,
-    isScorer,
-
-    scorerPermissions,
-    canScoreSection,
-
-    signOut,
+  const canScoreSection = (section: ScoutSection): boolean => {
+    if (isAdmin) return true;
+    if (!isScorer) return false;
+    return scorerSections.includes(section);
   };
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider
+      value={{
+        user,
+        session,
+        loading,
+        isAdmin,
+        isScorer,
+        scorerSections,
+        signIn,
+        signUp,
+        signOut,
+        canScoreSection,
+        refreshRoles,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth() {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error('useAuth must be used within AuthProvider');
-  return ctx;
+  const context = useContext(AuthContext);
+  if (context === undefined) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
 }
