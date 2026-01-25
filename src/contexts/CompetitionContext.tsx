@@ -1,279 +1,634 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { supabase } from '@/integrations/supabase/client';
-import { useToast } from '@/hooks/use-toast';
-import { useAuth } from '@/contexts/AuthContext';
-import type { Competition, ScoutSection } from '@/types/competition';
+import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
+import {
+  Competition,
+  Station,
+  Patrol,
+  Score,
+  ScoutSection,
+  PatrolWithScore,
+  CompetitionStatus,
+  ScoutGroup,
+  ScoutGroupTemplate,
+} from "@/types/competition";
+import { supabase } from "@/integrations/supabase/client";
 
-type CompetitionContextType = {
-  loading: boolean;
-
-  competition: Competition | null;
-
+interface CompetitionContextType {
+  // All competitions
+  competitions: Competition[];
   activeCompetitions: Competition[];
   archivedCompetitions: Competition[];
 
-  // For UI (scorer): only competitions the user can score in AND that are open
-  selectableActiveCompetitions: Competition[];
+  // Current competition
+  competition: Competition | null;
+  stations: Station[];
+  patrols: Patrol[];
+  scores: Score[];
+  scoutGroups: ScoutGroup[];
 
-  selectedCompetitionId: string | null;
-  selectCompetition: (competitionId: string) => void;
+  // Competition management
+  createCompetition: (data: { name: string; date: string }) => Promise<Competition>;
+  selectCompetition: (id: string) => void;
+  closeCompetition: (id: string) => void;
+  reopenCompetition: (id: string) => void;
+  deleteCompetition: (id: string) => void;
+  updateCompetitionById: (id: string, updates: Partial<Competition>) => void;
 
-  // Existing things your app already uses (stations, patrols etc.)
-  stations: any[];
-  patrols: any[];
-  scoutGroups: any[];
-  groupTemplates: any[];
+  // Station actions
+  addStation: (station: Omit<Station, "id" | "createdAt">) => void;
+  updateStation: (id: string, updates: Partial<Station>) => void;
+  deleteStation: (id: string) => void;
 
-  refreshAll: () => Promise<void>;
-};
+  // Patrol actions
+  addPatrol: (patrol: Omit<Patrol, "id" | "createdAt">) => void;
+  updatePatrol: (id: string, updates: Partial<Patrol>) => void;
+  deletePatrol: (id: string) => void;
+
+  // Scout Group actions (DB-kopplade)
+  addScoutGroup: (name: string) => Promise<void>;
+  updateScoutGroup: (id: string, name: string) => Promise<void>;
+  deleteScoutGroup: (id: string) => Promise<void>;
+  importScoutGroupsFromTemplate: (templateId: string) => Promise<void>;
+
+  // Scout Group Template actions (lokalt i localStorage)
+  scoutGroupTemplates: ScoutGroupTemplate[];
+  createScoutGroupTemplate: (name: string, groups: string[]) => void;
+  deleteScoutGroupTemplate: (id: string) => void;
+  saveCurrentGroupsAsTemplate: (templateName: string) => void;
+
+  // Score actions
+  setScore: (patrolId: string, stationId: string, score: number) => void;
+  getScore: (patrolId: string, stationId: string) => number;
+
+  // Computed data
+  getPatrolsWithScores: (section?: ScoutSection) => PatrolWithScore[];
+  getStationScores: (stationId: string) => Array<{ patrol: Patrol; score: number }>;
+  getScoutGroupName: (groupId: string) => string | undefined;
+
+  // Competition actions
+  updateCompetition: (updates: Partial<Competition>) => void;
+}
 
 const CompetitionContext = createContext<CompetitionContextType | undefined>(undefined);
 
-const SELECTED_KEY = 'scoutscores_selected_competition_id';
+const STORAGE_KEY = "scout-competitions-data";
+const SELECTED_KEY = "scout-selected-competition";
+const TEMPLATES_KEY = "scout-group-templates";
+
+const generateId = () => Math.random().toString(36).substring(2, 15);
 
 export function CompetitionProvider({ children }: { children: React.ReactNode }) {
-  const { toast } = useToast();
-  const { isAdmin, isScorer, scorerPermissions } = useAuth();
-
-  const [loading, setLoading] = useState(true);
-
-  const [activeCompetitions, setActiveCompetitions] = useState<Competition[]>([]);
-  const [archivedCompetitions, setArchivedCompetitions] = useState<Competition[]>([]);
-
-  const [selectedId, setSelectedId] = useState<string | null>(() => {
-    const fromStorage = typeof window !== 'undefined' ? localStorage.getItem(SELECTED_KEY) : null;
-    return fromStorage || null;
+  const [competitions, setCompetitions] = useState<Competition[]>(() => {
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      try {
+        return JSON.parse(stored);
+      } catch {
+        return [];
+      }
+    }
+    return [];
   });
 
-  const [stations, setStations] = useState<any[]>([]);
-  const [patrols, setPatrols] = useState<any[]>([]);
-  const [scoutGroups, setScoutGroups] = useState<any[]>([]);
-  const [groupTemplates, setGroupTemplates] = useState<any[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(() => {
+    return localStorage.getItem(SELECTED_KEY);
+  });
 
-  const allowedCompetitionIdsForScorer = useMemo(() => {
-    const s = new Set<string>();
-    for (const p of scorerPermissions) s.add(p.competitionId);
-    return s;
-  }, [scorerPermissions]);
-
-  const selectableActiveCompetitions = useMemo(() => {
-    if (isAdmin) return activeCompetitions;
-    if (!isScorer) return []; // non-scorer should not select competitions here (they can still apply)
-    return activeCompetitions.filter((c) => allowedCompetitionIdsForScorer.has(c.id));
-  }, [isAdmin, isScorer, activeCompetitions, allowedCompetitionIdsForScorer]);
-
-  // Determine "current competition" (selected) from selectedId
-  const competition = useMemo(() => {
-    if (!selectedId) return null;
-
-    // Admin: can select any
-    if (isAdmin) {
-      return (
-        activeCompetitions.find((c) => c.id === selectedId) ??
-        archivedCompetitions.find((c) => c.id === selectedId) ??
-        null
-      );
-    }
-
-    // Scorer: only selectable actives
-    if (isScorer) {
-      return selectableActiveCompetitions.find((c) => c.id === selectedId) ?? null;
-    }
-
-    return null;
-  }, [selectedId, isAdmin, isScorer, activeCompetitions, archivedCompetitions, selectableActiveCompetitions]);
-
-  const fetchCompetitions = async () => {
-    const { data, error } = await (supabase as any)
-      .from('competitions')
-      .select('*')
-      .order('date', { ascending: true });
-
-    if (error) throw error;
-
-    const comps: Competition[] = (data ?? []).map((c: any) => ({
-      id: c.id,
-      name: c.name,
-      date: c.date,
-      isActive: !!c.is_active,
-      createdAt: c.created_at,
-      closedAt: c.closed_at,
-    }));
-
-    setActiveCompetitions(comps.filter((c) => c.isActive));
-    setArchivedCompetitions(comps.filter((c) => !c.isActive));
-  };
-
-  const fetchStations = async (competitionId: string) => {
-    const { data, error } = await (supabase as any)
-      .from('stations')
-      .select('*')
-      .eq('competition_id', competitionId)
-      .order('order_index', { ascending: true });
-
-    if (error) throw error;
-    setStations(data ?? []);
-  };
-
-  const fetchPatrols = async (competitionId: string) => {
-    const { data, error } = await (supabase as any)
-      .from('patrols')
-      .select('*')
-      .eq('competition_id', competitionId)
-      .order('name', { ascending: true });
-
-    if (error) throw error;
-    setPatrols(data ?? []);
-  };
-
-  const fetchScoutGroups = async (competitionId: string) => {
-    const { data, error } = await (supabase as any)
-      .from('scout_groups')
-      .select('*')
-      .eq('competition_id', competitionId)
-      .order('name', { ascending: true });
-
-    if (error) throw error;
-    setScoutGroups(data ?? []);
-  };
-
-  const fetchGroupTemplates = async () => {
-    const { data, error } = await (supabase as any).from('scout_group_templates').select('*');
-
-    if (error) throw error;
-    setGroupTemplates(data ?? []);
-  };
-
-  const refreshAll = async () => {
-    setLoading(true);
-    try {
-      await fetchCompetitions();
-      await fetchGroupTemplates();
-    } catch (e) {
-      console.error('Failed to fetch competitions:', e);
-      toast({
-        title: 'Kunde inte hämta tävlingar',
-        variant: 'destructive',
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Initial load
+  // Save to localStorage
   useEffect(() => {
-    refreshAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(competitions));
+  }, [competitions]);
 
-  // Keep selectedId valid depending on role/permissions/active comps
   useEffect(() => {
-    // Admin: keep stored selection if it exists, else pick first active, else first archived, else null
-    if (isAdmin) {
-      const exists =
-        (selectedId && activeCompetitions.some((c) => c.id === selectedId)) ||
-        (selectedId && archivedCompetitions.some((c) => c.id === selectedId));
-
-      if (exists) return;
-
-      const fallback = activeCompetitions[0]?.id ?? archivedCompetitions[0]?.id ?? null;
-      setSelectedId(fallback);
-      if (fallback) localStorage.setItem(SELECTED_KEY, fallback);
-      else localStorage.removeItem(SELECTED_KEY);
-      return;
+    if (selectedId) {
+      localStorage.setItem(SELECTED_KEY, selectedId);
+    } else {
+      localStorage.removeItem(SELECTED_KEY);
     }
+  }, [selectedId]);
 
-    // Scorer: must be one of selectable active competitions
-    if (isScorer) {
-      const selectableIds = selectableActiveCompetitions.map((c) => c.id);
+  // Scout group templates
+  const [scoutGroupTemplates, setScoutGroupTemplates] = useState<ScoutGroupTemplate[]>(() => {
+    const stored = localStorage.getItem(TEMPLATES_KEY);
+    if (stored) {
+      try {
+        return JSON.parse(stored);
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  });
 
-      // If user has no open competitions, selected must be null
-      if (selectableIds.length === 0) {
-        if (selectedId !== null) {
-          setSelectedId(null);
-          localStorage.removeItem(SELECTED_KEY);
-        }
+  // Save templates to localStorage
+  useEffect(() => {
+    localStorage.setItem(TEMPLATES_KEY, JSON.stringify(scoutGroupTemplates));
+  }, [scoutGroupTemplates]);
+
+  // Derived state
+  const competition = competitions.find((c) => c.id === selectedId) ?? null;
+  const activeCompetitions = competitions.filter((c) => c.status === "active");
+  const archivedCompetitions = competitions.filter((c) => c.status === "closed");
+  const stations = competition?.stations ?? [];
+  const patrols = competition?.patrols ?? [];
+  const scores = competition?.scores ?? [];
+  const scoutGroups = competition?.scoutGroups ?? [];
+
+  // Auto-select first active competition if none selected
+  useEffect(() => {
+    if (!selectedId && activeCompetitions.length > 0) {
+      setSelectedId(activeCompetitions[0].id);
+    }
+  }, [selectedId, activeCompetitions]);
+
+  // Helper to update current competition
+  const updateCurrentCompetition = useCallback(
+    (updater: (comp: Competition) => Competition) => {
+      if (!selectedId) return;
+      setCompetitions((prev) => prev.map((c) => (c.id === selectedId ? updater(c) : c)));
+    },
+    [selectedId]
+  );
+
+  // ✅ Hämta kårer från Supabase när vald tävling ändras
+  useEffect(() => {
+    if (!selectedId) return;
+
+    (async () => {
+      const { data, error } = await supabase
+        .from("scout_groups")
+        .select("id,name,competition_id,created_at")
+        .eq("competition_id", selectedId)
+        .order("name", { ascending: true });
+
+      if (error) {
+        console.error("Kunde inte hämta kårer från databasen:", error);
         return;
       }
 
-      // If current selection is valid, keep it
-      if (selectedId && selectableIds.includes(selectedId)) return;
+      const groups: ScoutGroup[] = (data ?? []).map((row: any) => ({
+        id: row.id,
+        name: row.name,
+        createdAt: row.created_at ?? new Date().toISOString(),
+      }));
 
-      // Otherwise default to first selectable
-      const next = selectableIds[0];
-      setSelectedId(next);
-      localStorage.setItem(SELECTED_KEY, next);
-      return;
-    }
-
-    // Non-scorer/non-admin: no selection needed
-    if (selectedId !== null) {
-      setSelectedId(null);
-      localStorage.removeItem(SELECTED_KEY);
-    }
-  }, [isAdmin, isScorer, selectableActiveCompetitions, activeCompetitions, archivedCompetitions, selectedId]);
-
-  // When competition changes, fetch competition-scoped resources
-  useEffect(() => {
-    const cid = competition?.id;
-    if (!cid) {
-      setStations([]);
-      setPatrols([]);
-      setScoutGroups([]);
-      return;
-    }
-
-    (async () => {
-      try {
-        await Promise.all([fetchStations(cid), fetchPatrols(cid), fetchScoutGroups(cid)]);
-      } catch (e) {
-        console.error('Failed to fetch competition data:', e);
-      }
+      setCompetitions((prev) =>
+        prev.map((c) => (c.id === selectedId ? { ...c, scoutGroups: groups } : c))
+      );
     })();
-  }, [competition?.id]);
+  }, [selectedId]);
 
-  const selectCompetition = (competitionId: string) => {
-    if (isAdmin) {
-      setSelectedId(competitionId);
-      localStorage.setItem(SELECTED_KEY, competitionId);
-      return;
+  // Competition management
+  const createCompetition = useCallback(async (data: { name: string; date: string }): Promise<Competition> => {
+    const name = data.name.trim();
+    const date = data.date;
+
+    if (!name) {
+      throw new Error("Competition name is required");
     }
 
-    if (isScorer) {
-      const allowed = selectableActiveCompetitions.some((c) => c.id === competitionId);
-      if (!allowed) return;
+    // 1) Create in Supabase (public.competitions)
+    const { data: dbComp, error } = await supabase
+      .from("competitions")
+      .insert({
+        name,
+        date,
+        is_active: true,
+      })
+      .select("id,name,date,is_active")
+      .single();
 
-      setSelectedId(competitionId);
-      localStorage.setItem(SELECTED_KEY, competitionId);
-      return;
+    if (error || !dbComp) {
+      console.error("Failed to create competition in DB:", error);
+      throw error ?? new Error("Failed to create competition");
     }
-  };
 
-  const value: CompetitionContextType = {
-    loading,
+    // 2) Create local Competition object (app-model)
+    const newCompetition: Competition = {
+      id: dbComp.id, // <-- DB UUID
+      name: dbComp.name,
+      date: dbComp.date,
+      status: "active",
+      stations: [],
+      patrols: [],
+      scores: [],
+      scoutGroups: [],
+      createdAt: new Date().toISOString(),
+    };
 
-    competition,
-    activeCompetitions,
-    archivedCompetitions,
+    setCompetitions((prev) => [...prev, newCompetition]);
+    setSelectedId(newCompetition.id);
 
-    selectableActiveCompetitions,
-    selectedCompetitionId: selectedId,
+    return newCompetition;
+  }, []);
 
-    selectCompetition,
+  const selectCompetition = useCallback((id: string) => {
+    setSelectedId(id);
+  }, []);
 
-    stations,
-    patrols,
-    scoutGroups,
-    groupTemplates,
+  const closeCompetition = useCallback(
+    (id: string) => {
+      setCompetitions((prev) =>
+        prev.map((c) =>
+          c.id === id
+            ? { ...c, status: "closed" as CompetitionStatus, closedAt: new Date().toISOString() }
+            : c
+        )
+      );
 
-    refreshAll,
-  };
+      // If closing the selected competition, select another active one
+      if (id === selectedId) {
+        const remaining = competitions.filter((c) => c.id !== id && c.status === "active");
+        setSelectedId(remaining[0]?.id ?? null);
+      }
+    },
+    [competitions, selectedId]
+  );
 
-  return <CompetitionContext.Provider value={value}>{children}</CompetitionContext.Provider>;
+  const reopenCompetition = useCallback((id: string) => {
+    setCompetitions((prev) =>
+      prev.map((c) =>
+        c.id === id ? { ...c, status: "active" as CompetitionStatus, closedAt: undefined } : c
+      )
+    );
+  }, []);
+
+  const deleteCompetition = useCallback(
+    (id: string) => {
+      setCompetitions((prev) => prev.filter((c) => c.id !== id));
+      if (id === selectedId) {
+        const remaining = competitions.filter((c) => c.id !== id && c.status === "active");
+        setSelectedId(remaining[0]?.id ?? null);
+      }
+    },
+    [competitions, selectedId]
+  );
+
+  // Station actions
+  const addStation = useCallback(
+    (station: Omit<Station, "id" | "createdAt">) => {
+      updateCurrentCompetition((comp) => ({
+        ...comp,
+        stations: [
+          ...comp.stations,
+          {
+            ...station,
+            id: generateId(),
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      }));
+    },
+    [updateCurrentCompetition]
+  );
+
+  const updateStation = useCallback(
+    (id: string, updates: Partial<Station>) => {
+      updateCurrentCompetition((comp) => ({
+        ...comp,
+        stations: comp.stations.map((s) => (s.id === id ? { ...s, ...updates } : s)),
+      }));
+    },
+    [updateCurrentCompetition]
+  );
+
+  const deleteStation = useCallback(
+    (id: string) => {
+      updateCurrentCompetition((comp) => ({
+        ...comp,
+        stations: comp.stations.filter((s) => s.id !== id),
+        scores: comp.scores.filter((s) => s.stationId !== id),
+      }));
+    },
+    [updateCurrentCompetition]
+  );
+
+  // Patrol actions
+  const addPatrol = useCallback(
+    (patrol: Omit<Patrol, "id" | "createdAt">) => {
+      updateCurrentCompetition((comp) => ({
+        ...comp,
+        patrols: [
+          ...comp.patrols,
+          {
+            ...patrol,
+            id: generateId(),
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      }));
+    },
+    [updateCurrentCompetition]
+  );
+
+  const updatePatrol = useCallback(
+    (id: string, updates: Partial<Patrol>) => {
+      updateCurrentCompetition((comp) => ({
+        ...comp,
+        patrols: comp.patrols.map((p) => (p.id === id ? { ...p, ...updates } : p)),
+      }));
+    },
+    [updateCurrentCompetition]
+  );
+
+  const deletePatrol = useCallback(
+    (id: string) => {
+      updateCurrentCompetition((comp) => ({
+        ...comp,
+        patrols: comp.patrols.filter((p) => p.id !== id),
+        scores: comp.scores.filter((s) => s.patrolId !== id),
+      }));
+    },
+    [updateCurrentCompetition]
+  );
+
+  // Score actions
+  const setScore = useCallback(
+    (patrolId: string, stationId: string, score: number) => {
+      updateCurrentCompetition((comp) => {
+        const existingIndex = comp.scores.findIndex((s) => s.patrolId === patrolId && s.stationId === stationId);
+
+        const newScore: Score = {
+          id: existingIndex >= 0 ? comp.scores[existingIndex].id : generateId(),
+          patrolId,
+          stationId,
+          score,
+          updatedAt: new Date().toISOString(),
+        };
+
+        if (existingIndex >= 0) {
+          const newScores = [...comp.scores];
+          newScores[existingIndex] = newScore;
+          return { ...comp, scores: newScores };
+        }
+
+        return { ...comp, scores: [...comp.scores, newScore] };
+      });
+    },
+    [updateCurrentCompetition]
+  );
+
+  const getScore = useCallback(
+    (patrolId: string, stationId: string) => {
+      const scoreRecord = scores.find((s) => s.patrolId === patrolId && s.stationId === stationId);
+      return scoreRecord?.score ?? 0;
+    },
+    [scores]
+  );
+
+  // Computed data
+  const getPatrolsWithScores = useCallback(
+    (section?: ScoutSection): PatrolWithScore[] => {
+      const filteredPatrols = section ? patrols.filter((p) => p.section === section) : patrols;
+
+      const patrolsWithScores: PatrolWithScore[] = filteredPatrols.map((patrol) => {
+        const patrolScores = scores.filter((s) => s.patrolId === patrol.id);
+        const stationScores: Record<string, number> = {};
+        let totalScore = 0;
+
+        patrolScores.forEach((s) => {
+          stationScores[s.stationId] = s.score;
+          totalScore += s.score;
+        });
+
+        return {
+          ...patrol,
+          totalScore,
+          stationScores,
+        };
+      });
+
+      patrolsWithScores.sort((a, b) => b.totalScore - a.totalScore);
+      patrolsWithScores.forEach((patrol, index) => {
+        patrol.rank = index + 1;
+      });
+
+      return patrolsWithScores;
+    },
+    [patrols, scores]
+  );
+
+  const getStationScores = useCallback(
+    (stationId: string) => {
+      return patrols
+        .map((patrol) => {
+          const scoreRecord = scores.find((s) => s.patrolId === patrol.id && s.stationId === stationId);
+          return {
+            patrol,
+            score: scoreRecord?.score ?? 0,
+          };
+        })
+        .sort((a, b) => b.score - a.score);
+    },
+    [patrols, scores]
+  );
+
+  const updateCompetition = useCallback(
+    (updates: Partial<Competition>) => {
+      updateCurrentCompetition((comp) => ({ ...comp, ...updates }));
+    },
+    [updateCurrentCompetition]
+  );
+
+  const updateCompetitionById = useCallback((id: string, updates: Partial<Competition>) => {
+    setCompetitions((prev) => prev.map((c) => (c.id === id ? { ...c, ...updates } : c)));
+  }, []);
+
+  // ✅ Scout Group actions (DB-kopplade)
+  const addScoutGroup = useCallback(
+    async (name: string) => {
+      if (!selectedId) return;
+      const trimmed = name.trim();
+      if (!trimmed) return;
+
+      const { data, error } = await supabase
+        .from("scout_groups")
+        .insert({
+          name: trimmed,
+          competition_id: selectedId,
+        })
+        .select("id,name,created_at")
+        .single();
+
+      if (error || !data) {
+        console.error("Kunde inte skapa kår:", error);
+        return;
+      }
+
+      const newGroup: ScoutGroup = {
+        id: data.id,
+        name: data.name,
+        createdAt: data.created_at ?? new Date().toISOString(),
+      };
+
+      updateCurrentCompetition((comp) => ({
+        ...comp,
+        scoutGroups: [...(comp.scoutGroups ?? []), newGroup],
+      }));
+    },
+    [selectedId, updateCurrentCompetition]
+  );
+
+  const updateScoutGroup = useCallback(
+    async (id: string, name: string) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+
+      const { error } = await supabase.from("scout_groups").update({ name: trimmed }).eq("id", id);
+
+      if (error) {
+        console.error("Kunde inte uppdatera kår:", error);
+        return;
+      }
+
+      updateCurrentCompetition((comp) => ({
+        ...comp,
+        scoutGroups: (comp.scoutGroups ?? []).map((g) => (g.id === id ? { ...g, name: trimmed } : g)),
+      }));
+    },
+    [updateCurrentCompetition]
+  );
+
+  const deleteScoutGroup = useCallback(
+    async (id: string) => {
+      const { error } = await supabase.from("scout_groups").delete().eq("id", id);
+
+      if (error) {
+        console.error("Kunde inte ta bort kår:", error);
+        return;
+      }
+
+      updateCurrentCompetition((comp) => ({
+        ...comp,
+        scoutGroups: (comp.scoutGroups ?? []).filter((g) => g.id !== id),
+        patrols: comp.patrols.map((p) => (p.scoutGroupId === id ? { ...p, scoutGroupId: undefined } : p)),
+      }));
+    },
+    [updateCurrentCompetition]
+  );
+
+  const getScoutGroupName = useCallback(
+    (groupId: string): string | undefined => {
+      return scoutGroups.find((g) => g.id === groupId)?.name;
+    },
+    [scoutGroups]
+  );
+
+  // Scout Group Template actions
+  const createScoutGroupTemplate = useCallback((name: string, groups: string[]) => {
+    setScoutGroupTemplates((prev) => [
+      ...prev,
+      {
+        id: generateId(),
+        name: name.trim(),
+        groups,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+  }, []);
+
+  const deleteScoutGroupTemplate = useCallback((id: string) => {
+    setScoutGroupTemplates((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  const saveCurrentGroupsAsTemplate = useCallback(
+    (templateName: string) => {
+      const groupNames = scoutGroups.map((g) => g.name);
+      if (groupNames.length > 0) {
+        createScoutGroupTemplate(templateName, groupNames);
+      }
+    },
+    [scoutGroups, createScoutGroupTemplate]
+  );
+
+  const importScoutGroupsFromTemplate = useCallback(
+    async (templateId: string) => {
+      if (!selectedId) return;
+
+      const template = scoutGroupTemplates.find((t) => t.id === templateId);
+      if (!template) return;
+
+      // Filtrera bort namn som redan finns lokalt
+      const existingNames = new Set((scoutGroups ?? []).map((g) => g.name.toLowerCase()));
+      const namesToAdd = template.groups.filter((n) => !existingNames.has(n.toLowerCase()));
+      if (namesToAdd.length === 0) return;
+
+      const rowsToInsert = namesToAdd.map((name) => ({
+        name,
+        competition_id: selectedId,
+      }));
+
+      const { data, error } = await supabase
+        .from("scout_groups")
+        .insert(rowsToInsert)
+        .select("id,name,created_at");
+
+      if (error) {
+        console.error("Kunde inte importera kårer från mall:", error);
+        return;
+      }
+
+      const newGroups: ScoutGroup[] = (data ?? []).map((row: any) => ({
+        id: row.id,
+        name: row.name,
+        createdAt: row.created_at ?? new Date().toISOString(),
+      }));
+
+      updateCurrentCompetition((comp) => ({
+        ...comp,
+        scoutGroups: [...(comp.scoutGroups ?? []), ...newGroups],
+      }));
+    },
+    [selectedId, scoutGroupTemplates, scoutGroups, updateCurrentCompetition]
+  );
+
+  return (
+    <CompetitionContext.Provider
+      value={{
+        competitions,
+        activeCompetitions,
+        archivedCompetitions,
+        competition,
+        stations,
+        patrols,
+        scores,
+        scoutGroups,
+        createCompetition,
+        selectCompetition,
+        closeCompetition,
+        reopenCompetition,
+        deleteCompetition,
+        updateCompetitionById,
+        addStation,
+        updateStation,
+        deleteStation,
+        addPatrol,
+        updatePatrol,
+        deletePatrol,
+        addScoutGroup,
+        updateScoutGroup,
+        deleteScoutGroup,
+        importScoutGroupsFromTemplate,
+        scoutGroupTemplates,
+        createScoutGroupTemplate,
+        deleteScoutGroupTemplate,
+        saveCurrentGroupsAsTemplate,
+        setScore,
+        getScore,
+        getPatrolsWithScores,
+        getStationScores,
+        getScoutGroupName,
+        updateCompetition,
+      }}
+    >
+      {children}
+    </CompetitionContext.Provider>
+  );
 }
 
 export function useCompetition() {
-  const ctx = useContext(CompetitionContext);
-  if (!ctx) throw new Error('useCompetition must be used within CompetitionProvider');
-  return ctx;
+  const context = useContext(CompetitionContext);
+  if (context === undefined) {
+    throw new Error("useCompetition must be used within a CompetitionProvider");
+  }
+  return context;
 }
