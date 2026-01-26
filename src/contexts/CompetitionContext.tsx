@@ -158,14 +158,20 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
   const [competitions, setCompetitions] = useState<Competition[]>([]);
 
-  // ✅ EN stabil nyckel för alla (admin/scorer) → inget “key-flip” under uppstart
-  const [selectedId, setSelectedId] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem(SELECTED_KEY);
-    } catch {
-      return null;
-    }
-  });
+  // ✅ Starta null och hydrera efter mount (undviker race/SSR)
+const [selectedId, setSelectedId] = useState<string | null>(null);
+const [hasHydratedSelection, setHasHydratedSelection] = useState(false);
+
+useEffect(() => {
+  try {
+    const saved = localStorage.getItem(SELECTED_KEY);
+    setSelectedId(saved);
+  } catch {
+    setSelectedId(null);
+  } finally {
+    setHasHydratedSelection(true);
+  }
+}, []);
 
   const [scorerCompetitionIds, setScorerCompetitionIds] = useState<string[]>([]);
   const [scoutGroupTemplates, setScoutGroupTemplates] = useState<ScoutGroupTemplate[]>([]);
@@ -200,18 +206,23 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   const scores = competition?.scores ?? [];
   const scoutGroups = competition?.scoutGroups ?? [];
 
-  // persist selection (stabil key)
-  useEffect(() => {
-    try {
-      if (selectedId) localStorage.setItem(SELECTED_KEY, selectedId);
-      else localStorage.removeItem(SELECTED_KEY);
-    } catch {
-      // ignore
-    }
-  }, [selectedId]);
+  // ✅ Persist selection – först efter hydrering (annars kan vi skriva över bort sparat val)
+useEffect(() => {
+  if (!hasHydratedSelection) return;
+
+  try {
+    if (selectedId) localStorage.setItem(SELECTED_KEY, selectedId);
+    else localStorage.removeItem(SELECTED_KEY);
+  } catch {
+    // ignore
+  }
+}, [selectedId, hasHydratedSelection]);
 
   const refreshAll = useCallback(async () => {
-    const { data: comps, error: compsErr } = await supabase
+  // ✅ Vänta tills localStorage-hydrering är klar
+  if (!hasHydratedSelection) return;
+
+  const { data: comps, error: compsErr } = await supabase
       .from("competitions")
       .select("id,name,date,is_active,created_at,closed_at")
       .order("created_at", { ascending: false });
@@ -335,7 +346,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
     setCompetitions(merged);
     setSelectedId((prev) => chooseSelectedId(prev));
-  }, [isAdmin, user?.id]);
+  }, [isAdmin, user?.id, hasHydratedSelection]);
 
   const refreshTemplates = useCallback(async () => {
     const { data, error } = await supabase
