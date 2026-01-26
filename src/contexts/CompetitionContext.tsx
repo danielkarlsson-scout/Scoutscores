@@ -11,7 +11,6 @@ import {
   Station,
 } from "@/types/competition";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/contexts/AuthContext";
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 
@@ -19,15 +18,6 @@ interface CompetitionContextType {
   competitions: Competition[];
   activeCompetitions: Competition[];
   archivedCompetitions: Competition[];
-
-  /**
-   * Scorer support:
-   * - `selectableCompetitions` are the competitions a scorer may actively score in (active only)
-   * - `allowedCompetitionIds` are the competition ids the scorer has permission for
-   */
-  selectableCompetitions: Competition[];
-  allowedCompetitionIds: string[];
-  canSelectCompetition: (competitionId: string) => boolean;
 
   competition: Competition | null;
   stations: Station[];
@@ -154,12 +144,8 @@ function mapDbTemplate(row: any): ScoutGroupTemplate {
 }
 
 export function CompetitionProvider({ children }: { children: React.ReactNode }) {
-  const { user, isAdmin } = useAuth();
-
   const [competitions, setCompetitions] = useState<Competition[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(() => localStorage.getItem(SELECTED_KEY));
-
-  const [scorerCompetitionIds, setScorerCompetitionIds] = useState<string[]>([]);
 
   const [scoutGroupTemplates, setScoutGroupTemplates] = useState<ScoutGroupTemplate[]>([]);
 
@@ -174,20 +160,6 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   const activeCompetitions = useMemo(() => competitions.filter((c) => c.status === "active"), [competitions]);
   const archivedCompetitions = useMemo(() => competitions.filter((c) => c.status === "closed"), [competitions]);
 
-  const scorerActiveCompetitions = useMemo(() => {
-    if (isAdmin) return activeCompetitions;
-    const allowed = new Set(scorerCompetitionIds);
-    return activeCompetitions.filter((c) => allowed.has(c.id));
-  }, [activeCompetitions, isAdmin, scorerCompetitionIds]);
-
-  const canSelectCompetition = useCallback(
-    (competitionId: string) => {
-      if (isAdmin) return true;
-      return scorerCompetitionIds.includes(competitionId) && activeCompetitions.some((c) => c.id === competitionId);
-    },
-    [isAdmin, scorerCompetitionIds, activeCompetitions]
-  );
-
   const stations = competition?.stations ?? [];
   const patrols = competition?.patrols ?? [];
   const scores = competition?.scores ?? [];
@@ -199,24 +171,10 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     else localStorage.removeItem(SELECTED_KEY);
   }, [selectedId]);
 
-  // Auto-select / validate selection
+  // Auto-select first active if none selected
   useEffect(() => {
-    // Admin: previous behavior (first active)
-    if (isAdmin) {
-      if (!selectedId && activeCompetitions.length > 0) setSelectedId(activeCompetitions[0].id);
-      return;
-    }
-
-    // Scorer: only allow selecting active competitions they have permission for
-    if (scorerActiveCompetitions.length === 0) {
-      setSelectedId(null);
-      return;
-    }
-
-    if (!selectedId || !scorerActiveCompetitions.some((c) => c.id === selectedId)) {
-      setSelectedId(scorerActiveCompetitions[0].id);
-    }
-  }, [isAdmin, selectedId, activeCompetitions, scorerActiveCompetitions]);
+    if (!selectedId && activeCompetitions.length > 0) setSelectedId(activeCompetitions[0].id);
+  }, [selectedId, activeCompetitions]);
 
   const refreshAll = useCallback(async () => {
     // 1) competitions
@@ -233,33 +191,9 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
     const mapped = (comps ?? []).map(mapDbCompetition);
 
-    // 1.1) scorer permissions (so we can both: a) drive UI selection, b) avoid fetching data we don't have RLS for)
-    let permIds: string[] = [];
-    if (!isAdmin && user?.id) {
-      const { data: perms, error: permsErr } = await supabase
-        .from("scorer_permissions")
-        .select("competition_id")
-        .eq("user_id", user.id);
-
-      if (permsErr) {
-        console.error("Failed to load scorer permissions:", permsErr);
-        permIds = [];
-      } else {
-        permIds = (perms ?? []).map((p: any) => p.competition_id);
-      }
-    }
-    setScorerCompetitionIds(permIds);
-
-    // Determine which competitions we are allowed to fetch related data for
-    // - Admin: all competitions
-    // - Scorer: only ACTIVE competitions they have permission for
-    const allIds = mapped.map((c) => c.id);
-    const allowed = new Set(permIds);
-    const idsToFetch = isAdmin ? allIds : mapped.filter((c) => c.status === "active" && allowed.has(c.id)).map((c) => c.id);
-
-    if (idsToFetch.length === 0) {
-      // No accessible competitions -> keep competitions list (without related data)
-      setCompetitions(mapped);
+    const ids = mapped.map((c) => c.id);
+    if (ids.length === 0) {
+      setCompetitions([]);
       return;
     }
 
@@ -268,19 +202,19 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       supabase
         .from("stations")
         .select("id,competition_id,name,description,max_score,leader_email,allowed_sections,created_at")
-        .in("competition_id", idsToFetch),
+        .in("competition_id", ids),
       supabase
         .from("patrols")
         .select("id,competition_id,name,section,scout_group_id,members,created_at")
-        .in("competition_id", idsToFetch),
+        .in("competition_id", ids),
       supabase
         .from("scores")
         .select("id,competition_id,patrol_id,station_id,score,updated_at")
-        .in("competition_id", idsToFetch),
+        .in("competition_id", ids),
       supabase
         .from("scout_groups")
         .select("id,competition_id,name,created_at")
-        .in("competition_id", idsToFetch),
+        .in("competition_id", ids),
     ]);
 
     if (stationsRes.error) console.error("Failed to load stations:", stationsRes.error);
@@ -329,7 +263,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     }));
 
     setCompetitions(merged);
-  }, [isAdmin, user?.id]);
+  }, []);
 
   const refreshTemplates = useCallback(async () => {
     const { data, error } = await supabase
@@ -378,21 +312,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     return newComp;
   }, []);
 
-  const selectCompetition = useCallback(
-    (id: string) => {
-      // Admin can select any competition.
-      if (isAdmin) {
-        setSelectedId(id);
-        return;
-      }
-
-      // Scorer: only allow selecting competitions they have access to and that are open.
-      const isAllowed = scorerCompetitionIds.includes(id);
-      const isActive = competitions.some((c) => c.id === id && c.status === "active");
-      if (isAllowed && isActive) setSelectedId(id);
-    },
-    [isAdmin, scorerCompetitionIds, competitions]
-  );
+  const selectCompetition = useCallback((id: string) => setSelectedId(id), []);
 
   const closeCompetition = useCallback(
     async (id: string) => {
@@ -946,10 +866,6 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
         competitions,
         activeCompetitions,
         archivedCompetitions,
-
-        scorerCompetitionIds,
-        scorerActiveCompetitions,
-        canSelectCompetition,
 
         competition,
         stations,
