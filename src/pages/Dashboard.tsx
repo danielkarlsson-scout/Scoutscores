@@ -78,10 +78,27 @@ export default function Dashboard() {
           icon={Users}
         />
         <StatCard
-          title="Registrerade poäng"
+          /*title="Registrerade poäng"
           value={scores.length}
           description={`Av ${stations.length * patrols.length} möjliga`}
-          icon={Target}
+          icon={Target}*/
+  title="Besökta stationer"
+  value={scores.filter((s) => s.score > 0).length}
+  description={`Av ${
+    stations.length * patrols.length -
+    stations.reduce((acc, st) => {
+      return (
+        acc +
+        patrols.filter((p) => {
+          const row = scores.find(
+            (s) => s.stationId === st.id && s.patrolId === p.id
+          );
+          return !row || row.score <= 0;
+        }).length
+      );
+    }, 0)
+  } möjliga`}
+  icon={Target}
         />
         <StatCard
           title="Genomsnittspoäng"
