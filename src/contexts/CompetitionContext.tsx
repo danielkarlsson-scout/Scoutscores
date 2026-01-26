@@ -165,10 +165,28 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 const [selectedId, setSelectedId] = useState<string | null>(null);
 const [hasHydratedSelection, setHasHydratedSelection] = useState(false);
 
+// Hydrera selection från per-user key — fallback / migrera från legacy key vid behov
 useEffect(() => {
   try {
-    const saved = localStorage.getItem(storageKey);
-    setSelectedId(saved);
+    // 1) Försök läsa per-user key först
+    const perUser = localStorage.getItem(storageKey);
+
+    if (perUser) {
+      setSelectedId(perUser);
+    } else {
+      // 2) Fallback: läs legacy global key och migrera den till per-user key
+      const legacy = localStorage.getItem(SELECTED_KEY);
+      if (legacy) {
+        setSelectedId(legacy);
+        try {
+          localStorage.setItem(storageKey, legacy);
+        } catch {
+          // ignore write error
+        }
+      } else {
+        setSelectedId(null);
+      }
+    }
   } catch {
     setSelectedId(null);
   } finally {
@@ -209,15 +227,29 @@ useEffect(() => {
   const scores = competition?.scores ?? [];
   const scoutGroups = competition?.scoutGroups ?? [];
 
-  // ✅ Persist selection – först efter hydrering (annars kan vi skriva över bort sparat val)
+// Persist selection — skriv både per-user key *och* legacy key så gamla komponenter förblir kompatibla.
 useEffect(() => {
   if (!hasHydratedSelection) return;
 
   try {
-    if (selectedId) localStorage.setItem(storageKey, selectedId);
-else localStorage.removeItem(storageKey);
+    if (selectedId) {
+      localStorage.setItem(storageKey, selectedId);
+      // håll även legacy nyckel uppdaterad (för dropdown + gamla komponenter)
+      try {
+        localStorage.setItem(SELECTED_KEY, selectedId);
+      } catch {
+        // ignore secondary write error
+      }
+    } else {
+      localStorage.removeItem(storageKey);
+      try {
+        localStorage.removeItem(SELECTED_KEY);
+      } catch {
+        // ignore
+      }
+    }
   } catch {
-    // ignore
+    // ignore primary write error
   }
 }, [selectedId, hasHydratedSelection, storageKey]);
 
