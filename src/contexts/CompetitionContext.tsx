@@ -22,11 +22,11 @@ interface CompetitionContextType {
 
   /**
    * Scorer support:
-   * - `selectableCompetitions` are the competitions a scorer may actively score in (active only)
-   * - `allowedCompetitionIds` are the competition ids the scorer has permission for
+   * - `scorerActiveCompetitions` are the active competitions a scorer may score in
+   * - `scorerCompetitionIds` are the competition ids the scorer has permission for
    */
-  selectableCompetitions: Competition[];
-  allowedCompetitionIds: string[];
+  scorerActiveCompetitions: Competition[];
+  scorerCompetitionIds: string[];
   canSelectCompetition: (competitionId: string) => boolean;
 
   competition: Competition | null;
@@ -200,124 +200,124 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   }, [selectedId]);
 
   const refreshAll = useCallback(async () => {
-  // 1) competitions
-  const { data: comps, error: compsErr } = await supabase
-    .from("competitions")
-    .select("id,name,date,is_active,created_at,closed_at")
-    .order("created_at", { ascending: false });
+    // 1) competitions
+    const { data: comps, error: compsErr } = await supabase
+      .from("competitions")
+      .select("id,name,date,is_active,created_at,closed_at")
+      .order("created_at", { ascending: false });
 
-  if (compsErr) {
-    console.error("Failed to load competitions:", compsErr);
-    setCompetitions([]);
-    return;
-  }
-
-  const mapped = (comps ?? []).map(mapDbCompetition);
-
-// ✅ VIKTIGT: Om vi inte är admin och user ännu inte är laddad,
-// så ska vi INTE nolla/ändra selectedId (annars tappar vi valet vid refresh).
-if (!isAdmin && !user?.id) {
-  setCompetitions(mapped);
-  return;
-}
-
-  // 1.1) scorer permissions
-  let permIds: string[] = [];
-  if (!isAdmin && user?.id) {
-    const { data: perms, error: permsErr } = await supabase
-      .from("scorer_permissions")
-      .select("competition_id")
-      .eq("user_id", user.id);
-
-    if (permsErr) {
-      console.error("Failed to load scorer permissions:", permsErr);
-      permIds = [];
-    } else {
-      permIds = (perms ?? []).map((p: any) => p.competition_id);
-    }
-  }
-
-  setScorerCompetitionIds(permIds);
-
-  // Determine which competitions we are allowed to fetch related data for
-  const allIds = mapped.map((c) => c.id);
-  const allowed = new Set(permIds);
-  const idsToFetch = isAdmin
-    ? allIds
-    : mapped.filter((c) => c.status === "active" && allowed.has(c.id)).map((c) => c.id);
-
-  // ✅ Helper: välj/behåll selectedId baserat på senaste data
-  const chooseSelectedId = (prevSelectedId: string | null): string | null => {
-    if (isAdmin) {
-      // Admin: behåll om finns, annars välj första aktiva (om någon)
-      if (prevSelectedId && mapped.some((c) => c.id === prevSelectedId)) return prevSelectedId;
-      const firstActive = mapped.find((c) => c.status === "active")?.id;
-      return firstActive ?? null;
+    if (compsErr) {
+      console.error("Failed to load competitions:", compsErr);
+      setCompetitions([]);
+      return;
     }
 
-    // Scorer: endast aktiva tävlingar man har behörighet till
-    const selectable = mapped.filter((c) => c.status === "active" && allowed.has(c.id));
-    if (prevSelectedId && selectable.some((c) => c.id === prevSelectedId)) return prevSelectedId;
-    return selectable[0]?.id ?? null;
-  };
+    const mapped = (comps ?? []).map(mapDbCompetition);
 
-  if (idsToFetch.length === 0) {
-    // No accessible competitions -> keep competitions list (without related data)
-    setCompetitions(mapped);
+    // ✅ VIKTIGT: Om vi inte är admin och user ännu inte är laddad,
+    // så ska vi INTE nolla/ändra selectedId (annars tappar vi valet vid refresh).
+    if (!isAdmin && !user?.id) {
+      setCompetitions(mapped);
+      return;
+    }
 
-    // ✅ Behåll vald tävling om möjligt (annars null / första tillåtna)
-    setSelectedId((prev) => chooseSelectedId(prev));
-    return;
-  }
+    // 1.1) scorer permissions
+    let permIds: string[] = [];
+    if (!isAdmin && user?.id) {
+      const { data: perms, error: permsErr } = await supabase
+        .from("scorer_permissions")
+        .select("competition_id")
+        .eq("user_id", user.id);
 
-  // 2) fetch related tables in parallel
-  const [stationsRes, patrolsRes, scoresRes, groupsRes] = await Promise.all([
-    supabase
-      .from("stations")
-      .select("id,competition_id,name,description,max_score,leader_email,allowed_sections,created_at")
-      .in("competition_id", idsToFetch),
-    supabase
-      .from("patrols")
-      .select("id,competition_id,name,section,scout_group_id,members,created_at")
-      .in("competition_id", idsToFetch),
-    supabase
-      .from("scores")
-      .select("id,competition_id,patrol_id,station_id,score,updated_at")
-      .in("competition_id", idsToFetch),
-    supabase
-      .from("scout_groups")
-      .select("id,competition_id,name,created_at")
-      .in("competition_id", idsToFetch),
-  ]);
+      if (permsErr) {
+        console.error("Failed to load scorer permissions:", permsErr);
+        permIds = [];
+      } else {
+        permIds = (perms ?? []).map((p: any) => p.competition_id);
+      }
+    }
 
-  if (stationsRes.error) console.error("Failed to load stations:", stationsRes.error);
-  if (patrolsRes.error) console.error("Failed to load patrols:", patrolsRes.error);
-  if (scoresRes.error) console.error("Failed to load scores:", scoresRes.error);
-  if (groupsRes.error) console.error("Failed to load scout_groups:", groupsRes.error);
+    setScorerCompetitionIds(permIds);
 
-  const stationsByComp = new Map<string, Station[]>();
-  for (const row of stationsRes.data ?? []) {
-    const cid = (row as any).competition_id;
-    const arr = stationsByComp.get(cid) ?? [];
-    arr.push(mapDbStation(row));
-    stationsByComp.set(cid, arr);
-  }
+    // Determine which competitions we are allowed to fetch related data for
+    const allIds = mapped.map((c) => c.id);
+    const allowed = new Set(permIds);
+    const idsToFetch = isAdmin
+      ? allIds
+      : mapped.filter((c) => c.status === "active" && allowed.has(c.id)).map((c) => c.id);
 
-  const patrolsByComp = new Map<string, Patrol[]>();
-  for (const row of patrolsRes.data ?? []) {
-    const cid = (row as any).competition_id;
-    const arr = patrolsByComp.get(cid) ?? [];
-    arr.push(mapDbPatrol(row));
-    patrolsByComp.set(cid, arr);
-  }
+    // Helper: välj/behåll selectedId baserat på senaste data
+    const chooseSelectedId = (prevSelectedId: string | null): string | null => {
+      // Admin: behåll om tävlingen finns (även om den är stängd)
+      if (isAdmin) {
+        if (prevSelectedId && mapped.some((c) => c.id === prevSelectedId)) return prevSelectedId;
+        // inget valt än -> välj första aktiva om finns, annars första i listan
+        return mapped.find((c) => c.status === "active")?.id ?? mapped[0]?.id ?? null;
+      }
 
-  const scoresByComp = new Map<string, Score[]>();
-  for (const row of scoresRes.data ?? []) {
-    const cid = (row as any).competition_id;
-    const arr = scoresByComp.get(cid) ?? [];
-    arr.push(mapDbScore(row));
-    scoresByComp.set(cid, arr);
-  }
+      // Scorer: användaren måste vara laddad (guard ovan gör att user.id finns)
+      const selectable = mapped.filter((c) => c.status === "active" && allowed.has(c.id));
+      if (prevSelectedId && selectable.some((c) => c.id === prevSelectedId)) return prevSelectedId;
+      return selectable[0]?.id ?? null;
+    };
+
+    if (idsToFetch.length === 0) {
+      // No accessible competitions -> keep competitions list (without related data)
+      setCompetitions(mapped);
+
+      // Behåll vald tävling om möjligt (annars null / första tillåtna)
+      setSelectedId((prev) => chooseSelectedId(prev));
+      return;
+    }
+
+    // 2) fetch related tables in parallel
+    const [stationsRes, patrolsRes, scoresRes, groupsRes] = await Promise.all([
+      supabase
+        .from("stations")
+        .select("id,competition_id,name,description,max_score,leader_email,allowed_sections,created_at")
+        .in("competition_id", idsToFetch),
+      supabase
+        .from("patrols")
+        .select("id,competition_id,name,section,scout_group_id,members,created_at")
+        .in("competition_id", idsToFetch),
+      supabase
+        .from("scores")
+        .select("id,competition_id,patrol_id,station_id,score,updated_at")
+        .in("competition_id", idsToFetch),
+      supabase
+        .from("scout_groups")
+        .select("id,competition_id,name,created_at")
+        .in("competition_id", idsToFetch),
+    ]);
+
+    if (stationsRes.error) console.error("Failed to load stations:", stationsRes.error);
+    if (patrolsRes.error) console.error("Failed to load patrols:", patrolsRes.error);
+    if (scoresRes.error) console.error("Failed to load scores:", scoresRes.error);
+    if (groupsRes.error) console.error("Failed to load scout_groups:", groupsRes.error);
+
+    const stationsByComp = new Map<string, Station[]>();
+    for (const row of stationsRes.data ?? []) {
+      const cid = (row as any).competition_id;
+      const arr = stationsByComp.get(cid) ?? [];
+      arr.push(mapDbStation(row));
+      stationsByComp.set(cid, arr);
+    }
+
+    const patrolsByComp = new Map<string, Patrol[]>();
+    for (const row of patrolsRes.data ?? []) {
+      const cid = (row as any).competition_id;
+      const arr = patrolsByComp.get(cid) ?? [];
+      arr.push(mapDbPatrol(row));
+      patrolsByComp.set(cid, arr);
+    }
+
+    const scoresByComp = new Map<string, Score[]>();
+    for (const row of scoresRes.data ?? []) {
+      const cid = (row as any).competition_id;
+      const arr = scoresByComp.get(cid) ?? [];
+      arr.push(mapDbScore(row));
+      scoresByComp.set(cid, arr);
+    }
 
   const groupsByComp = new Map<string, ScoutGroup[]>();
   for (const row of groupsRes.data ?? []) {
