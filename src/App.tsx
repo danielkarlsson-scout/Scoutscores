@@ -21,6 +21,9 @@ import NotFound from "./pages/NotFound";
 import ResetPassword from "./pages/ResetPassword";
 import VerifyEmail from "./pages/VerifyEmail";
 
+// Scorer: ansök/avvakta behörighet
+import AwaitingAccess from "./pages/AwaitingAccess";
+
 // Intern/admin-sida (behåll om den används)
 import PatrolRegistration from "./pages/PatrolRegistration";
 
@@ -52,6 +55,16 @@ const App = () => (
 
               {/* Publik resultattavla */}
               <Route path="/scoreboard" element={<ScoreboardWrapper />} />
+
+              {/* Scorer: ansök om fler tävlingar / invänta access */}
+              <Route
+                path="/awaiting-access"
+                element={
+                  <ProtectedRoute>
+                    <AwaitingAccess />
+                  </ProtectedRoute>
+                }
+              />
 
               {/* Skyddade routes */}
               <Route
