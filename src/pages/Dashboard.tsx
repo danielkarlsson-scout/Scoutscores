@@ -11,8 +11,7 @@ import { CompetitionForm } from '@/components/forms/CompetitionForm';
 
 export default function Dashboard() {
   const { competition, stations, patrols, scores, getPatrolsWithScores } = useCompetition();
-  const { isAdmin, isScorer } = useAuth();
-  const showScoreboard = isAdmin;
+  const { isAdmin, isScorer } = useAuth()
   // Show prompt to create/select competition if none selected
   if (!competition) {
     return (
@@ -50,7 +49,7 @@ export default function Dashboard() {
     count: patrols.filter(p => p.section === section).length,
   }));
 
-  return (
+    return (
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">{competition.name}</h1>
@@ -75,7 +74,7 @@ export default function Dashboard() {
         <StatCard
           title="Patruller"
           value={patrols.length}
-          description={`I ${patrolsBySection.filter(s => s.count > 0).length} avdelningar`}
+          description={`I ${patrolsBySection.filter((s) => s.count > 0).length} avdelningar`}
           icon={Users}
         />
         <StatCard
@@ -96,48 +95,50 @@ export default function Dashboard() {
         />
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        {/* Top Patrols */}
-        {/* Top Patrols (admin only) */}
-{showScoreboard && (
-  <Card>
-    <CardHeader>
-      <CardTitle className="flex items-center gap-2">
-        <Trophy className="h-5 w-5 text-secondary" />
-        Topplista
-      </CardTitle>
-      <CardDescription>Ledande patruller just nu</CardDescription>
-    </CardHeader>
-    <CardContent>
-      {topPatrols.length > 0 ? (
-        <div className="space-y-3">
-          {topPatrols.map((patrol, index) => (
-            <div key={patrol.id} className="flex items-center gap-3">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-muted font-bold">
-                {index + 1}
+      {/* Admin-only: Topplista (visas inte för scorer) */}
+      {isAdmin && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Trophy className="h-5 w-5 text-secondary" />
+              Topplista
+            </CardTitle>
+            <CardDescription>Ledande patruller just nu</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {topPatrols.length > 0 ? (
+              <div className="space-y-3">
+                {topPatrols.map((patrol, index) => (
+                  <div key={patrol.id} className="flex items-center gap-3">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-muted font-bold">
+                      {index + 1}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium truncate">{patrol.name}</p>
+                      <SectionBadge section={patrol.section} size="sm" />
+                    </div>
+                    <div className="text-right">
+                      <p className="font-bold">{patrol.totalScore}</p>
+                      <p className="text-xs text-muted-foreground">poäng</p>
+                    </div>
+                  </div>
+                ))}
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="font-medium truncate">{patrol.name}</p>
-                <SectionBadge section={patrol.section} size="sm" />
-              </div>
-              <div className="text-right">
-                <p className="font-bold">{patrol.totalScore}</p>
-                <p className="text-xs text-muted-foreground">poäng</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p className="text-muted-foreground text-center py-4">Inga poäng registrerade ännu</p>
+            ) : (
+              <p className="text-muted-foreground text-center py-4">
+                Inga poäng registrerade ännu
+              </p>
+            )}
+
+            <Button asChild variant="outline" className="w-full mt-4">
+              <Link to="/scoreboard">Visa fullständig resultattavla</Link>
+            </Button>
+          </CardContent>
+        </Card>
       )}
 
-      <Button asChild variant="outline" className="w-full mt-4">
-        <Link to="/scoreboard">Visa fullständig resultattavla</Link>
-      </Button>
-    </CardContent>
-  </Card>
-)}
-
+      {/* Webblayout: Patruller per avdelning bredvid Snabbstart */}
+      <div className="grid gap-6 lg:grid-cols-2">
         {/* Patrols by Section */}
         <Card>
           <CardHeader>
@@ -167,7 +168,6 @@ export default function Dashboard() {
               ))}
             </div>
 
-            {/* ❌ Scorer ska inte se Hantera patruller */}
             {isAdmin && (
               <Button asChild variant="outline" className="w-full mt-4">
                 <Link to="/patrols">Hantera patruller</Link>
@@ -175,44 +175,41 @@ export default function Dashboard() {
             )}
           </CardContent>
         </Card>
+
+        {/* Quick Actions */}
+        <Card>
+          <CardHeader>
+            <CardTitle>Snabbstart</CardTitle>
+            <CardDescription>Kom igång med tävlingen</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-wrap gap-3">
+              {isAdmin && (
+                <>
+                  <Button asChild>
+                    <Link to="/stations">
+                      <Flag className="h-4 w-4 mr-2" />
+                      Hantera stationer
+                    </Link>
+                  </Button>
+                  <Button asChild variant="secondary">
+                    <Link to="/patrols">
+                      <Users className="h-4 w-4 mr-2" />
+                      Hantera patruller
+                    </Link>
+                  </Button>
+                </>
+              )}
+
+              <Button asChild variant="outline">
+                <Link to="/scoring">
+                  <Target className="h-4 w-4 mr-2" />
+                  Registrera poäng
+                </Link>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
       </div>
-
-      {/* Quick Actions */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Snabbstart</CardTitle>
-          <CardDescription>Kom igång med tävlingen</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-wrap gap-3">
-            {/* ❌ Scorer ska inte se dessa */}
-            {isAdmin && (
-              <>
-                <Button asChild>
-                  <Link to="/stations">
-                    <Flag className="h-4 w-4 mr-2" />
-                    Hantera stationer
-                  </Link>
-                </Button>
-                <Button asChild variant="secondary">
-                  <Link to="/patrols">
-                    <Users className="h-4 w-4 mr-2" />
-                    Hantera patruller
-                  </Link>
-                </Button>
-              </>
-            )}
-
-            {/* ✅ Alla med behörighet får registrera poäng */}
-            <Button asChild variant="outline">
-              <Link to="/scoring">
-                <Target className="h-4 w-4 mr-2" />
-                Registrera poäng
-              </Link>
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   );
-}
