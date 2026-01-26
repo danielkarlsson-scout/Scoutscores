@@ -804,7 +804,6 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     (patrolId: string, stationId: string) => {
       const key = scoreKey(patrolId, stationId);
       if (scoreOverrides.has(key)) return scoreOverrides.get(key)!;
-
       const row = scores.find((s) => s.patrolId === patrolId && s.stationId === stationId);
       return row?.score ?? 0;
     },
@@ -825,6 +824,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
       const key = scoreKey(patrolId, stationId);
 
+      // optimistic local update
       setCompetitions((prev) =>
         prev.map((c) => {
           if (c.id !== selectedId) return c;
@@ -913,7 +913,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       setScoreOverrides((prev) => new Map(prev).set(key, pending.score));
       setScoreSaveState((prev) => new Map(prev).set(key, "saving"));
 
-      await persistScore(patrolId, stationId,
+      await persistScore(patrolId, stationId, pending.score);
     },
     [pendingRetry, persistScore]
   );
@@ -947,7 +947,9 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
   const getStationScores = useCallback(
     (stationId: string) => {
-      return patrols.map((patrol) => ({ patrol, score: getScore(patrol.id, stationId) })).sort((a, b) => b.score - a.score);
+      return patrols
+        .map((patrol) => ({ patrol, score: getScore(patrol.id, stationId) }))
+        .sort((a, b) => b.score - a.score);
     },
     [patrols, getScore]
   );
@@ -961,8 +963,8 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
         activeCompetitions,
         archivedCompetitions,
 
-        scorerCompetitionIds,
-        scorerActiveCompetitions,
+        selectableCompetitions,
+        allowedCompetitionIds,
         canSelectCompetition,
 
         competition,
