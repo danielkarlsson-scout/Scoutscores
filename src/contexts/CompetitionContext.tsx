@@ -155,7 +155,10 @@ function mapDbTemplate(row: any): ScoutGroupTemplate {
 
 export function CompetitionProvider({ children }: { children: React.ReactNode }) {
   const { user, isAdmin } = useAuth();
-
+  const storageKey = useMemo(() => {
+  const uid = user?.id ?? "anon";
+  return `${SELECTED_KEY}:${isAdmin ? "admin" : "scorer"}:${uid}`;
+}, [user?.id, isAdmin]);
   const [competitions, setCompetitions] = useState<Competition[]>([]);
 
   // ✅ Starta null och hydrera efter mount (undviker race/SSR)
@@ -164,15 +167,15 @@ const [hasHydratedSelection, setHasHydratedSelection] = useState(false);
 
 useEffect(() => {
   try {
-    const saved = localStorage.getItem(SELECTED_KEY);
+    const saved = localStorage.getItem(storageKey);
     setSelectedId(saved);
   } catch {
     setSelectedId(null);
   } finally {
     setHasHydratedSelection(true);
   }
-}, []);
-
+}, [storageKey]);
+  
   const [scorerCompetitionIds, setScorerCompetitionIds] = useState<string[]>([]);
   const [scoutGroupTemplates, setScoutGroupTemplates] = useState<ScoutGroupTemplate[]>([]);
 
@@ -211,8 +214,8 @@ useEffect(() => {
   if (!hasHydratedSelection) return;
 
   try {
-    if (selectedId) localStorage.setItem(SELECTED_KEY, selectedId);
-    else localStorage.removeItem(SELECTED_KEY);
+    if (selectedId) localStorage.setItem(storageKey, selectedId);
+else localStorage.removeItem(storageKey);
   } catch {
     // ignore
   }
