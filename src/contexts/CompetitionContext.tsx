@@ -214,6 +214,13 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
   const mapped = (comps ?? []).map(mapDbCompetition);
 
+// ✅ VIKTIGT: Om vi inte är admin och user ännu inte är laddad,
+// så ska vi INTE nolla/ändra selectedId (annars tappar vi valet vid refresh).
+if (!isAdmin && !user?.id) {
+  setCompetitions(mapped);
+  return;
+}
+
   // 1.1) scorer permissions
   let permIds: string[] = [];
   if (!isAdmin && user?.id) {
