@@ -158,11 +158,14 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
   const [competitions, setCompetitions] = useState<Competition[]>([]);
 
-  // selection
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-
-  // ✅ vi måste veta att vi hydratiserat JUST current storageKey innan vi persistar
-  const [hydratedKey, setHydratedKey] = useState<string | null>(null);
+  // ✅ EN stabil nyckel för alla (admin/scorer) → inget “key-flip” under uppstart
+  const [selectedId, setSelectedId] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(SELECTED_KEY);
+    } catch {
+      return null;
+    }
+  });
 
   const [scorerCompetitionIds, setScorerCompetitionIds] = useState<string[]>([]);
   const [scoutGroupTemplates, setScoutGroupTemplates] = useState<ScoutGroupTemplate[]>([]);
@@ -173,26 +176,6 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   const [pendingRetry, setPendingRetry] = useState<Map<string, { patrolId: string; stationId: string; score: number }>>(
     new Map()
   );
-
-  // ✅ Per-user + per-roll storage key (admin/scorer ska inte skriva över varandra)
-  const storageKey = useMemo(() => {
-    const uid = user?.id ?? "anon";
-    const role = isAdmin ? "admin" : "scorer";
-    return `${SELECTED_KEY}:${role}:${uid}`;
-  }, [user?.id, isAdmin]);
-
-  // ✅ Hydrera selection från current storageKey
-  useEffect(() => {
-    // när key byts (t.ex. isAdmin flippar) så vill vi hydratisera igen innan vi sparar något
-    try {
-      const saved = localStorage.getItem(storageKey);
-      setSelectedId(saved);
-    } catch {
-      setSelectedId(null);
-    } finally {
-      setHydratedKey(storageKey);
-    }
-  }, [storageKey]);
 
   const competition = useMemo(() => competitions.find((c) => c.id === selectedId) ?? null, [competitions, selectedId]);
   const activeCompetitions = useMemo(() => competitions.filter((c) => c.status === "active"), [competitions]);
@@ -217,23 +200,17 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   const scores = competition?.scores ?? [];
   const scoutGroups = competition?.scoutGroups ?? [];
 
-  // ✅ Persist selection — bara om vi hydratiserat current key (annars kan vi skriva över fel nyckel vid role-flip)
+  // persist selection (stabil key)
   useEffect(() => {
-    if (hydratedKey !== storageKey) return;
-
     try {
-      if (selectedId) localStorage.setItem(storageKey, selectedId);
-      else localStorage.removeItem(storageKey);
+      if (selectedId) localStorage.setItem(SELECTED_KEY, selectedId);
+      else localStorage.removeItem(SELECTED_KEY);
     } catch {
       // ignore
     }
-  }, [selectedId, storageKey, hydratedKey]);
+  }, [selectedId]);
 
   const refreshAll = useCallback(async () => {
-    // ✅ Kör inte innan vi hydratiserat current key
-    if (hydratedKey !== storageKey) return;
-
-    // 1) competitions
     const { data: comps, error: compsErr } = await supabase
       .from("competitions")
       .select("id,name,date,is_active,created_at,closed_at")
@@ -247,7 +224,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
     const mapped = (comps ?? []).map(mapDbCompetition);
 
-    // ✅ behåll selection för scorer tills user finns
+    // ✅ VIKTIGT (behåll från din nuvarande): scorer ska inte tappa selected innan auth laddat
     if (!isAdmin && !user?.id) {
       setCompetitions(mapped);
       return;
@@ -358,7 +335,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
     setCompetitions(merged);
     setSelectedId((prev) => chooseSelectedId(prev));
-  }, [isAdmin, user?.id, hydratedKey, storageKey]);
+  }, [isAdmin, user?.id]);
 
   const refreshTemplates = useCallback(async () => {
     const { data, error } = await supabase
