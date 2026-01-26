@@ -22,6 +22,14 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
+// ✅ Fast ordning för avdelningar: Spårare, Upptäckare, Äventyrare, Utmanare
+const SECTION_SORT_ORDER: ScoutSection[] = ["sparare", "upptackare", "aventyrare", "utmanare"] as ScoutSection[];
+
+const sectionRank = (s: ScoutSection) => {
+  const idx = SECTION_SORT_ORDER.indexOf(s);
+  return idx === -1 ? 999 : idx;
+};
+
 export default function Scoring() {
   const { stations, patrols, setScore, getScore, getScoreSaveState, retrySaveScore } = useCompetition();
   const { isAdmin, isScorer, canScoreSection } = useAuth();
@@ -56,13 +64,22 @@ export default function Scoring() {
 
   const currentStation = useMemo(() => stations.find((s) => s.id === selectedStation), [stations, selectedStation]);
 
+  // ✅ Filtrera + sortera patruller:
+  // 1) Avdelning enligt fast ordning
+  // 2) Namn A–Ö inom avdelning
   const filteredPatrols = useMemo(() => {
-    return patrols.filter((patrol) => {
+    const list = patrols.filter((patrol) => {
       if (selectedSections.length > 0 && !selectedSections.includes(patrol.section)) return false;
       if (currentStation?.allowedSections && currentStation.allowedSections.length > 0) {
         return currentStation.allowedSections.includes(patrol.section);
       }
       return true;
+    });
+
+    return list.sort((a, b) => {
+      const diff = sectionRank(a.section) - sectionRank(b.section);
+      if (diff !== 0) return diff;
+      return a.name.localeCompare(b.name, "sv");
     });
   }, [patrols, selectedSections, currentStation]);
 
@@ -95,7 +112,6 @@ export default function Scoring() {
             Kunde inte spara
           </span>
 
-          {/* ✅ Retry direkt */}
           <button
             type="button"
             onClick={() => retrySaveScore(patrolId, stationId)}
@@ -184,7 +200,8 @@ export default function Scoring() {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56 bg-popover">
-              {(Object.keys(SCOUT_SECTIONS) as ScoutSection[]).map((section) => (
+              {/* ✅ Visa avdelningar i fast ordning även i filtret */}
+              {SECTION_SORT_ORDER.map((section) => (
                 <DropdownMenuCheckboxItem
                   key={section}
                   checked={selectedSections.includes(section)}
@@ -219,17 +236,20 @@ export default function Scoring() {
       {selectedSections.length > 0 && (
         <div className="flex flex-wrap gap-2 items-center">
           <span className="text-sm text-muted-foreground">Filter:</span>
-          {selectedSections.map((section) => (
-            <Badge
-              key={section}
-              variant="secondary"
-              className="gap-1 cursor-pointer hover:bg-destructive/20"
-              onClick={() => toggleSection(section)}
-            >
-              {SCOUT_SECTIONS[section].name}
-              <X className="h-3 w-3" />
-            </Badge>
-          ))}
+          {selectedSections
+            .slice()
+            .sort((a, b) => sectionRank(a) - sectionRank(b)) // ✅ håll chips i rätt ordning också
+            .map((section) => (
+              <Badge
+                key={section}
+                variant="secondary"
+                className="gap-1 cursor-pointer hover:bg-destructive/20"
+                onClick={() => toggleSection(section)}
+              >
+                {SCOUT_SECTIONS[section].name}
+                <X className="h-3 w-3" />
+              </Badge>
+            ))}
           <Button variant="ghost" size="sm" onClick={clearFilters} className="h-6 px-2 text-xs">
             Rensa alla
           </Button>
@@ -265,11 +285,8 @@ export default function Scoring() {
 
                   return (
                     <div key={patrol.id} className="flex items-center gap-4 py-2 border-b last:border-0">
-                      {/* ✅ Option 1: låt namnet wrapa istället för truncate */}
                       <div className="flex-1 min-w-0">
-                        <p className="font-medium whitespace-normal break-words leading-snug">
-                          {patrol.name}
-                        </p>
+                        <p className="font-medium whitespace-normal break-words leading-snug">{patrol.name}</p>
 
                         <div className="flex flex-wrap items-center gap-2">
                           <SectionBadge section={patrol.section} size="sm" />
