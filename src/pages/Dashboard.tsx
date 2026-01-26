@@ -97,122 +97,48 @@ export default function Dashboard() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        {/* Top Patrols */}
-        {/* Top Patrols (admin only) */}
-{showScoreboard && (
+  {/* Top Patrols (admin only) */}
+  {showScoreboard && (
+    <Card>...Topplista...</Card>
+  )}
+
+  {/* Patrols by Section */}
+  <Card>...Patruller per avdelning...</Card>
+
+  {/* Quick Actions */}
   <Card>
     <CardHeader>
-      <CardTitle className="flex items-center gap-2">
-        <Trophy className="h-5 w-5 text-secondary" />
-        Topplista
-      </CardTitle>
-      <CardDescription>Ledande patruller just nu</CardDescription>
+      <CardTitle>Snabbstart</CardTitle>
+      <CardDescription>Kom igång med tävlingen</CardDescription>
     </CardHeader>
     <CardContent>
-      {topPatrols.length > 0 ? (
-        <div className="space-y-3">
-          {topPatrols.map((patrol, index) => (
-            <div key={patrol.id} className="flex items-center gap-3">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-muted font-bold">
-                {index + 1}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="font-medium truncate">{patrol.name}</p>
-                <SectionBadge section={patrol.section} size="sm" />
-              </div>
-              <div className="text-right">
-                <p className="font-bold">{patrol.totalScore}</p>
-                <p className="text-xs text-muted-foreground">poäng</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : (
-        <p className="text-muted-foreground text-center py-4">Inga poäng registrerade ännu</p>
-      )}
-
-      <Button asChild variant="outline" className="w-full mt-4">
-        <Link to="/scoreboard">Visa fullständig resultattavla</Link>
-      </Button>
-    </CardContent>
-  </Card>
-)}
-
-        {/* Patrols by Section */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Users className="h-5 w-5 text-primary" />
-              Patruller per avdelning
-            </CardTitle>
-            <CardDescription>Fördelning av deltagande patruller</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {patrolsBySection.map(({ section, count }) => (
-                <div key={section} className="flex items-center gap-3">
-                  <SectionBadge section={section} />
-                  <div className="flex-1">
-                    <div className="h-2 rounded-full bg-muted overflow-hidden">
-                      <div
-                        className={`h-full transition-all section-${section}`}
-                        style={{
-                          width: `${patrols.length > 0 ? (count / patrols.length) * 100 : 0}%`,
-                        }}
-                      />
-                    </div>
-                  </div>
-                  <span className="font-medium w-8 text-right">{count}</span>
-                </div>
-              ))}
-            </div>
-
-            {/* ❌ Scorer ska inte se Hantera patruller */}
-            {isAdmin && (
-              <Button asChild variant="outline" className="w-full mt-4">
-                <Link to="/patrols">Hantera patruller</Link>
-              </Button>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Quick Actions */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Snabbstart</CardTitle>
-          <CardDescription>Kom igång med tävlingen</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex flex-wrap gap-3">
-            {/* ❌ Scorer ska inte se dessa */}
-            {isAdmin && (
-              <>
-                <Button asChild>
-                  <Link to="/stations">
-                    <Flag className="h-4 w-4 mr-2" />
-                    Hantera stationer
-                  </Link>
-                </Button>
-                <Button asChild variant="secondary">
-                  <Link to="/patrols">
-                    <Users className="h-4 w-4 mr-2" />
-                    Hantera patruller
-                  </Link>
-                </Button>
-              </>
-            )}
-
-            {/* ✅ Alla med behörighet får registrera poäng */}
-            <Button asChild variant="outline">
-              <Link to="/scoring">
-                <Target className="h-4 w-4 mr-2" />
-                Registrera poäng
+      <div className="flex flex-wrap gap-3">
+        {isAdmin && (
+          <>
+            <Button asChild>
+              <Link to="/stations">
+                <Flag className="h-4 w-4 mr-2" />
+                Hantera stationer
               </Link>
             </Button>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
+            <Button asChild variant="secondary">
+              <Link to="/patrols">
+                <Users className="h-4 w-4 mr-2" />
+                Hantera patruller
+              </Link>
+            </Button>
+          </>
+        )}
+
+        <Button asChild variant="outline">
+          <Link to="/scoring">
+            <Target className="h-4 w-4 mr-2" />
+            Registrera poäng
+          </Link>
+        </Button>
+      </div>
+    </CardContent>
+  </Card>
+</div>
   );
 }
