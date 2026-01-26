@@ -299,15 +299,17 @@ useEffect(() => {
     const idsToFetch = isAdmin ? allIds : mapped.filter((c) => c.status === "active" && allowed.has(c.id)).map((c) => c.id);
 
     const chooseSelectedId = (prevSelectedId: string | null): string | null => {
-      if (isAdmin) {
-        if (prevSelectedId && mapped.some((c) => c.id === prevSelectedId)) return prevSelectedId;
-        return mapped.find((c) => c.status === "active")?.id ?? mapped[0]?.id ?? null;
-      }
+  // 1) Om vi redan har ett val och det finns kvar i listan: behåll det.
+  if (prevSelectedId && mapped.some((c) => c.id === prevSelectedId)) return prevSelectedId;
 
-      const selectable = mapped.filter((c) => c.status === "active" && allowed.has(c.id));
-      if (prevSelectedId && selectable.some((c) => c.id === prevSelectedId)) return prevSelectedId;
-      return selectable[0]?.id ?? null;
-    };
+  // 2) Admin: gör INGEN auto-select här (det är det som orsakar "hoppar tillbaka")
+  //    Admin väljer via Tävlingar-sidan, så låt det vara null tills användaren väljer.
+  if (isAdmin) return null;
+
+  // 3) Scorer: välj första tävling som scorer får välja
+  const selectable = mapped.filter((c) => c.status === "active" && allowed.has(c.id));
+  return selectable[0]?.id ?? null;
+};
 
     if (idsToFetch.length === 0) {
       setCompetitions(mapped);
