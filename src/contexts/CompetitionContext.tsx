@@ -24,6 +24,9 @@ interface CompetitionContextType {
    * Scorer support:
    * - `selectableCompetitions` are the competitions a scorer may actively score in (active only)
    * - `allowedCompetitionIds` are the competition ids the scorer has permission for
+   *
+   * Admin:
+   * - selectableCompetitions = ALL competitions (active + closed) so saved selection can persist.
    */
   selectableCompetitions: Competition[];
   allowedCompetitionIds: string[];
@@ -83,8 +86,6 @@ interface CompetitionContextType {
 const CompetitionContext = createContext<CompetitionContextType | undefined>(undefined);
 
 const SELECTED_KEY = "scout-selected-competition";
-
-// For save state map keys
 const scoreKey = (patrolId: string, stationId: string) => `${patrolId}:${stationId}`;
 
 function mapDbCompetition(row: any): Competition {
@@ -158,14 +159,14 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
   const [competitions, setCompetitions] = useState<Competition[]>([]);
 
-  // ✅ Viktigt: börja med null och hydrera från localStorage efter mount
+  // ✅ Starta med null och hydrera från localStorage efter mount
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hasHydratedSelection, setHasHydratedSelection] = useState(false);
 
   const [scorerCompetitionIds, setScorerCompetitionIds] = useState<string[]>([]);
   const [scoutGroupTemplates, setScoutGroupTemplates] = useState<ScoutGroupTemplate[]>([]);
 
-  // For optimistic scoring + status
+  // optimistic scoring + status
   const [scoreOverrides, setScoreOverrides] = useState<Map<string, number>>(new Map());
   const [scoreSaveState, setScoreSaveState] = useState<Map<string, SaveState>>(new Map());
   const [pendingRetry, setPendingRetry] = useState<Map<string, { patrolId: string; stationId: string; score: number }>>(
@@ -188,11 +189,13 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   const activeCompetitions = useMemo(() => competitions.filter((c) => c.status === "active"), [competitions]);
   const archivedCompetitions = useMemo(() => competitions.filter((c) => c.status === "closed"), [competitions]);
 
+  // ✅ Admin: ALLA tävlingar (även stängda) så sparat val alltid finns i options
+  // ✅ Scorer: bara aktiva + behöriga
   const selectableCompetitions = useMemo(() => {
-    if (isAdmin) return activeCompetitions;
+    if (isAdmin) return competitions;
     const allowed = new Set(scorerCompetitionIds);
     return activeCompetitions.filter((c) => allowed.has(c.id));
-  }, [activeCompetitions, isAdmin, scorerCompetitionIds]);
+  }, [competitions, activeCompetitions, isAdmin, scorerCompetitionIds]);
 
   const allowedCompetitionIds = useMemo(() => scorerCompetitionIds, [scorerCompetitionIds]);
 
@@ -209,10 +212,9 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   const scores = competition?.scores ?? [];
   const scoutGroups = competition?.scoutGroups ?? [];
 
-  // ✅ Persist selection – men först efter hydrering (annars skrivs default över)
+  // ✅ Persist selection – men först efter hydrering
   useEffect(() => {
     if (!hasHydratedSelection) return;
-
     try {
       if (selectedId) localStorage.setItem(SELECTED_KEY, selectedId);
       else localStorage.removeItem(SELECTED_KEY);
@@ -222,7 +224,6 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   }, [selectedId, hasHydratedSelection]);
 
   const refreshAll = useCallback(async () => {
-    // ✅ Vänta tills vi vet vad localStorage säger innan vi ev. väljer default
     if (!hasHydratedSelection) return;
 
     const { data: comps, error: compsErr } = await supabase
@@ -238,13 +239,13 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
     const mapped = (comps ?? []).map(mapDbCompetition);
 
-    // Scorer: om auth ännu inte är laddad -> rör inte selectedId
+    // Scorer: om auth ännu inte laddad -> rör inte selectedId
     if (!isAdmin && !user?.id) {
       setCompetitions(mapped);
       return;
     }
 
-    // 1.1) scorer permissions
+    // scorer permissions
     let permIds: string[] = [];
     if (!isAdmin && user?.id) {
       const { data: perms, error: permsErr } = await supabase
@@ -261,26 +262,21 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     }
 
     setScorerCompetitionIds(permIds);
-
     const allowedSet = new Set(permIds);
 
     const chooseSelectedId = (prevSelectedId: string | null): string | null => {
       if (isAdmin) {
-        // Admin: behåll exakt vald tävling om den finns (även om den är stängd)
         if (prevSelectedId && mapped.some((c) => c.id === prevSelectedId)) return prevSelectedId;
-
-        // annars: välj senaste aktiva om någon, annars senaste överhuvudtaget, annars null
         const firstActive = mapped.find((c) => c.status === "active")?.id;
         return firstActive ?? mapped[0]?.id ?? null;
       }
 
-      // Scorer: endast aktiva + behöriga
       const selectable = mapped.filter((c) => c.status === "active" && allowedSet.has(c.id));
       if (prevSelectedId && selectable.some((c) => c.id === prevSelectedId)) return prevSelectedId;
       return selectable[0]?.id ?? null;
     };
 
-    // Determine which competitions we are allowed to fetch related data for
+    // ids to fetch
     const allIds = mapped.map((c) => c.id);
     const idsToFetch = isAdmin ? allIds : mapped.filter((c) => c.status === "active" && allowedSet.has(c.id)).map((c) => c.id);
 
@@ -401,7 +397,6 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     const newComp = mapDbCompetition(dbComp);
     setCompetitions((prev) => [newComp, ...prev]);
     setSelectedId(newComp.id);
-
     return newComp;
   }, []);
 
@@ -411,7 +406,6 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
         setSelectedId(id);
         return;
       }
-
       const isAllowed = scorerCompetitionIds.includes(id);
       const isActive = competitions.some((c) => c.id === id && c.status === "active");
       if (isAllowed && isActive) setSelectedId(id);
@@ -424,7 +418,6 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       const closedAt = new Date().toISOString();
 
       const { error } = await supabase.from("competitions").update({ is_active: false, closed_at: closedAt }).eq("id", id);
-
       if (error) {
         console.error("Failed to close competition:", error);
         return;
@@ -443,12 +436,10 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
   const reopenCompetition = useCallback(async (id: string) => {
     const { error } = await supabase.from("competitions").update({ is_active: true, closed_at: null }).eq("id", id);
-
     if (error) {
       console.error("Failed to reopen competition:", error);
       return;
     }
-
     setCompetitions((prev) => prev.map((c) => (c.id === id ? { ...c, status: "active", closedAt: undefined } : c)));
   }, []);
 
@@ -462,8 +453,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
       setCompetitions((prev) => prev.filter((c) => c.id !== id));
       if (id === selectedId) {
-        setSelectedId((prev) => {
-          if (prev !== id) return prev;
+        setSelectedId(() => {
           const remaining = competitions.filter((c) => c.id !== id);
           return remaining.find((c) => c.status === "active")?.id ?? remaining[0]?.id ?? null;
         });
@@ -539,7 +529,6 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       if (Array.isArray(updates.allowedSections)) patch.allowed_sections = updates.allowedSections;
 
       const { error } = await supabase.from("stations").update(patch).eq("id", id);
-
       if (error) {
         console.error("Failed to update station:", error);
         return;
@@ -666,7 +655,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   );
 
   // -------------------------
-  // scout groups (DB)
+  // scout groups
   // -------------------------
   const addScoutGroup = useCallback(
     async (name: string) => {
@@ -686,7 +675,6 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       }
 
       const newGroup = mapDbScoutGroup(data);
-
       setCompetitions((prev) =>
         prev.map((c) => (c.id === selectedId ? { ...c, scoutGroups: [...c.scoutGroups, newGroup] } : c))
       );
@@ -742,7 +730,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   );
 
   // -------------------------
-  // templates (DB)
+  // templates
   // -------------------------
   const saveCurrentGroupsAsTemplate = useCallback(
     async (templateName: string) => {
@@ -790,7 +778,10 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
       const rowsToInsert = namesToAdd.map((name) => ({ name, competition_id: selectedId }));
 
-      const { data, error } = await supabase.from("scout_groups").insert(rowsToInsert).select("id,competition_id,name,created_at");
+      const { data, error } = await supabase
+        .from("scout_groups")
+        .insert(rowsToInsert)
+        .select("id,competition_id,name,created_at");
 
       if (error) {
         console.error("Kunde inte importera kårer från mall:", error);
