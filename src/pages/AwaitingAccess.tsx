@@ -34,10 +34,20 @@ export default function AwaitingAccess() {
   const fetchExistingRequests = async () => {
     if (!user) return;
     
-    const { data, error } = await (supabase as any)
-      .from('permission_requests')
-      .select('*')
-      .eq('user_id', user.id);
+    const { data, error } = await supabase
+  .from("scorer_permissions")
+  .select(`
+    id,
+    section,
+    competition_id,
+    competitions:competitions (
+      id,
+      name,
+      is_active
+    )
+  `)
+  .eq("user_id", user.id)
+  .eq("competitions.is_active", true); // 🔒 dölj stängda
 
     if (!error && data) {
       setExistingRequests(data);
