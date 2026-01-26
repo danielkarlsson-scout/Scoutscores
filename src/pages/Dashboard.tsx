@@ -12,7 +12,7 @@ import { CompetitionForm } from '@/components/forms/CompetitionForm';
 export default function Dashboard() {
   const { competition, stations, patrols, scores, getPatrolsWithScores } = useCompetition();
   const { isAdmin, isScorer } = useAuth();
-  const showToplist = isAdmin;
+  const showScoreboard = isAdmin;
   // Show prompt to create/select competition if none selected
   if (!competition) {
     return (
