@@ -319,7 +319,6 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       scoresByComp.set(cid, arr);
     }
 
- 
     const groupsByComp = new Map<string, ScoutGroup[]>();
     for (const row of groupsRes.data ?? []) {
       const cid = (row as any).competition_id;
