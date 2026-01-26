@@ -22,14 +22,11 @@ interface CompetitionContextType {
 
   /**
    * Scorer support:
-   * - `selectableCompetitions` are the competitions a scorer may actively score in (active only)
-   * - `allowedCompetitionIds` are the competition ids the scorer has permission for
-   *
-   * Admin:
-   * - selectableCompetitions = ALL competitions (active + closed) so saved selection can persist.
+   * - `scorerActiveCompetitions` are the active competitions a scorer may score in
+   * - `scorerCompetitionIds` are the competition ids the scorer has permission for
    */
-  selectableCompetitions: Competition[];
-  allowedCompetitionIds: string[];
+  scorerActiveCompetitions: Competition[];
+  scorerCompetitionIds: string[];
   canSelectCompetition: (competitionId: string) => boolean;
 
   competition: Competition | null;
@@ -86,6 +83,8 @@ interface CompetitionContextType {
 const CompetitionContext = createContext<CompetitionContextType | undefined>(undefined);
 
 const SELECTED_KEY = "scout-selected-competition";
+
+// For save state map keys
 const scoreKey = (patrolId: string, stationId: string) => `${patrolId}:${stationId}`;
 
 function mapDbCompetition(row: any): Competition {
@@ -158,46 +157,28 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   const { user, isAdmin } = useAuth();
 
   const [competitions, setCompetitions] = useState<Competition[]>([]);
-
-  // ✅ Starta med null och hydrera från localStorage efter mount
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [hasHydratedSelection, setHasHydratedSelection] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(() => localStorage.getItem(SELECTED_KEY));
 
   const [scorerCompetitionIds, setScorerCompetitionIds] = useState<string[]>([]);
+
   const [scoutGroupTemplates, setScoutGroupTemplates] = useState<ScoutGroupTemplate[]>([]);
 
-  // optimistic scoring + status
+  // For optimistic scoring + status
   const [scoreOverrides, setScoreOverrides] = useState<Map<string, number>>(new Map());
   const [scoreSaveState, setScoreSaveState] = useState<Map<string, SaveState>>(new Map());
   const [pendingRetry, setPendingRetry] = useState<Map<string, { patrolId: string; stationId: string; score: number }>>(
     new Map()
   );
 
-  // ✅ Hydrera selectedId från localStorage efter mount
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(SELECTED_KEY);
-      setSelectedId(saved);
-    } catch {
-      setSelectedId(null);
-    } finally {
-      setHasHydratedSelection(true);
-    }
-  }, []);
-
   const competition = useMemo(() => competitions.find((c) => c.id === selectedId) ?? null, [competitions, selectedId]);
   const activeCompetitions = useMemo(() => competitions.filter((c) => c.status === "active"), [competitions]);
   const archivedCompetitions = useMemo(() => competitions.filter((c) => c.status === "closed"), [competitions]);
 
-  // ✅ Admin: ALLA tävlingar (även stängda) så sparat val alltid finns i options
-  // ✅ Scorer: bara aktiva + behöriga
-  const selectableCompetitions = useMemo(() => {
-    if (isAdmin) return competitions;
+  const scorerActiveCompetitions = useMemo(() => {
+    if (isAdmin) return activeCompetitions;
     const allowed = new Set(scorerCompetitionIds);
     return activeCompetitions.filter((c) => allowed.has(c.id));
-  }, [competitions, activeCompetitions, isAdmin, scorerCompetitionIds]);
-
-  const allowedCompetitionIds = useMemo(() => scorerCompetitionIds, [scorerCompetitionIds]);
+  }, [activeCompetitions, isAdmin, scorerCompetitionIds]);
 
   const canSelectCompetition = useCallback(
     (competitionId: string) => {
@@ -212,20 +193,14 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   const scores = competition?.scores ?? [];
   const scoutGroups = competition?.scoutGroups ?? [];
 
-  // ✅ Persist selection – men först efter hydrering
+  // persist selection
   useEffect(() => {
-    if (!hasHydratedSelection) return;
-    try {
-      if (selectedId) localStorage.setItem(SELECTED_KEY, selectedId);
-      else localStorage.removeItem(SELECTED_KEY);
-    } catch {
-      // ignore
-    }
-  }, [selectedId, hasHydratedSelection]);
+    if (selectedId) localStorage.setItem(SELECTED_KEY, selectedId);
+    else localStorage.removeItem(SELECTED_KEY);
+  }, [selectedId]);
 
   const refreshAll = useCallback(async () => {
-    if (!hasHydratedSelection) return;
-
+    // 1) competitions
     const { data: comps, error: compsErr } = await supabase
       .from("competitions")
       .select("id,name,date,is_active,created_at,closed_at")
@@ -239,13 +214,14 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
     const mapped = (comps ?? []).map(mapDbCompetition);
 
-    // Scorer: om auth ännu inte laddad -> rör inte selectedId
+    // ✅ VIKTIGT: Om vi inte är admin och user ännu inte är laddad,
+    // så ska vi INTE nolla/ändra selectedId (annars tappar vi valet vid refresh).
     if (!isAdmin && !user?.id) {
       setCompetitions(mapped);
       return;
     }
 
-    // scorer permissions
+    // 1.1) scorer permissions
     let permIds: string[] = [];
     if (!isAdmin && user?.id) {
       const { data: perms, error: permsErr } = await supabase
@@ -262,30 +238,39 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     }
 
     setScorerCompetitionIds(permIds);
-    const allowedSet = new Set(permIds);
 
+    // Determine which competitions we are allowed to fetch related data for
+    const allIds = mapped.map((c) => c.id);
+    const allowed = new Set(permIds);
+    const idsToFetch = isAdmin
+      ? allIds
+      : mapped.filter((c) => c.status === "active" && allowed.has(c.id)).map((c) => c.id);
+
+    // Helper: välj/behåll selectedId baserat på senaste data
     const chooseSelectedId = (prevSelectedId: string | null): string | null => {
+      // Admin: behåll om tävlingen finns (även om den är stängd)
       if (isAdmin) {
         if (prevSelectedId && mapped.some((c) => c.id === prevSelectedId)) return prevSelectedId;
-        const firstActive = mapped.find((c) => c.status === "active")?.id;
-        return firstActive ?? mapped[0]?.id ?? null;
+        // inget valt än -> välj första aktiva om finns, annars första i listan
+        return mapped.find((c) => c.status === "active")?.id ?? mapped[0]?.id ?? null;
       }
 
-      const selectable = mapped.filter((c) => c.status === "active" && allowedSet.has(c.id));
+      // Scorer: användaren måste vara laddad (guard ovan gör att user.id finns)
+      const selectable = mapped.filter((c) => c.status === "active" && allowed.has(c.id));
       if (prevSelectedId && selectable.some((c) => c.id === prevSelectedId)) return prevSelectedId;
       return selectable[0]?.id ?? null;
     };
 
-    // ids to fetch
-    const allIds = mapped.map((c) => c.id);
-    const idsToFetch = isAdmin ? allIds : mapped.filter((c) => c.status === "active" && allowedSet.has(c.id)).map((c) => c.id);
-
     if (idsToFetch.length === 0) {
+      // No accessible competitions -> keep competitions list (without related data)
       setCompetitions(mapped);
+
+      // Behåll vald tävling om möjligt (annars null / första tillåtna)
       setSelectedId((prev) => chooseSelectedId(prev));
       return;
     }
 
+    // 2) fetch related tables in parallel
     const [stationsRes, patrolsRes, scoresRes, groupsRes] = await Promise.all([
       supabase
         .from("stations")
@@ -351,8 +336,10 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     }));
 
     setCompetitions(merged);
+
+    // Behåll vald tävling om den fortfarande är giltig, annars välj default
     setSelectedId((prev) => chooseSelectedId(prev));
-  }, [isAdmin, user?.id, hasHydratedSelection]);
+  }, [isAdmin, user?.id]);
 
   const refreshTemplates = useCallback(async () => {
     const { data, error } = await supabase
@@ -397,15 +384,19 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     const newComp = mapDbCompetition(dbComp);
     setCompetitions((prev) => [newComp, ...prev]);
     setSelectedId(newComp.id);
+
     return newComp;
   }, []);
 
   const selectCompetition = useCallback(
     (id: string) => {
+      // Admin can select any competition.
       if (isAdmin) {
         setSelectedId(id);
         return;
       }
+
+      // Scorer: only allow selecting competitions they have access to and that are open.
       const isAllowed = scorerCompetitionIds.includes(id);
       const isActive = competitions.some((c) => c.id === id && c.status === "active");
       if (isAllowed && isActive) setSelectedId(id);
@@ -418,6 +409,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       const closedAt = new Date().toISOString();
 
       const { error } = await supabase.from("competitions").update({ is_active: false, closed_at: closedAt }).eq("id", id);
+
       if (error) {
         console.error("Failed to close competition:", error);
         return;
@@ -426,9 +418,8 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       setCompetitions((prev) => prev.map((c) => (c.id === id ? { ...c, status: "closed", closedAt } : c)));
 
       if (id === selectedId) {
-        const remaining = competitions.filter((c) => c.id !== id);
-        const nextId = remaining.find((c) => c.status === "active")?.id ?? remaining[0]?.id ?? null;
-        setSelectedId(nextId);
+        const remaining = competitions.filter((c) => c.id !== id && c.status === "active");
+        setSelectedId(remaining[0]?.id ?? null);
       }
     },
     [competitions, selectedId]
@@ -436,10 +427,12 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
   const reopenCompetition = useCallback(async (id: string) => {
     const { error } = await supabase.from("competitions").update({ is_active: true, closed_at: null }).eq("id", id);
+
     if (error) {
       console.error("Failed to reopen competition:", error);
       return;
     }
+
     setCompetitions((prev) => prev.map((c) => (c.id === id ? { ...c, status: "active", closedAt: undefined } : c)));
   }, []);
 
@@ -452,14 +445,9 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       }
 
       setCompetitions((prev) => prev.filter((c) => c.id !== id));
-      if (id === selectedId) {
-        setSelectedId(() => {
-          const remaining = competitions.filter((c) => c.id !== id);
-          return remaining.find((c) => c.status === "active")?.id ?? remaining[0]?.id ?? null;
-        });
-      }
+      if (id === selectedId) setSelectedId(null);
     },
-    [selectedId, competitions]
+    [selectedId]
   );
 
   const updateCompetitionById = useCallback((id: string, updates: Partial<Competition>) => {
@@ -529,6 +517,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       if (Array.isArray(updates.allowedSections)) patch.allowed_sections = updates.allowedSections;
 
       const { error } = await supabase.from("stations").update(patch).eq("id", id);
+
       if (error) {
         console.error("Failed to update station:", error);
         return;
@@ -655,7 +644,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   );
 
   // -------------------------
-  // scout groups
+  // scout groups (DB)
   // -------------------------
   const addScoutGroup = useCallback(
     async (name: string) => {
@@ -675,6 +664,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       }
 
       const newGroup = mapDbScoutGroup(data);
+
       setCompetitions((prev) =>
         prev.map((c) => (c.id === selectedId ? { ...c, scoutGroups: [...c.scoutGroups, newGroup] } : c))
       );
@@ -730,7 +720,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   );
 
   // -------------------------
-  // templates
+  // templates (DB)
   // -------------------------
   const saveCurrentGroupsAsTemplate = useCallback(
     async (templateName: string) => {
@@ -778,10 +768,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
       const rowsToInsert = namesToAdd.map((name) => ({ name, competition_id: selectedId }));
 
-      const { data, error } = await supabase
-        .from("scout_groups")
-        .insert(rowsToInsert)
-        .select("id,competition_id,name,created_at");
+      const { data, error } = await supabase.from("scout_groups").insert(rowsToInsert).select("id,competition_id,name,created_at");
 
       if (error) {
         console.error("Kunde inte importera kårer från mall:", error);
@@ -798,12 +785,13 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   );
 
   // -------------------------
-  // scoring
+  // scoring (DB write) — matchar övriga CRUD: optimistiskt lokalt + skriv DB (ingen select)
   // -------------------------
   const getScore = useCallback(
     (patrolId: string, stationId: string) => {
       const key = scoreKey(patrolId, stationId);
       if (scoreOverrides.has(key)) return scoreOverrides.get(key)!;
+
       const row = scores.find((s) => s.patrolId === patrolId && s.stationId === stationId);
       return row?.score ?? 0;
     },
@@ -824,7 +812,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
       const key = scoreKey(patrolId, stationId);
 
-      // optimistic local update
+      // 1) Optimistisk uppdatering i "competitions"-state (precis som committen gör)
       setCompetitions((prev) =>
         prev.map((c) => {
           if (c.id !== selectedId) return c;
@@ -852,8 +840,10 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
         })
       );
 
+      // 2) UI: saving
       setScoreSaveState((prev) => new Map(prev).set(key, "saving"));
 
+      // 3) Skriv till DB – viktigt: INGEN .select() / .single()
       const { error } = await supabase.from("scores").upsert(
         {
           competition_id: selectedId,
@@ -872,6 +862,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
         return;
       }
 
+      // 4) Success: saved + städa
       setScoreSaveState((prev) => new Map(prev).set(key, "saved"));
       setPendingRetry((prev) => {
         const next = new Map(prev);
@@ -884,6 +875,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
         return next;
       });
 
+      // 5) tillbaka till idle efter en stund
       window.setTimeout(() => {
         setScoreSaveState((prev) => {
           const next = new Map(prev);
@@ -898,7 +890,10 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   const setScore = useCallback(
     async (patrolId: string, stationId: string, score: number) => {
       const key = scoreKey(patrolId, stationId);
+
+      // optimistic override (för UI direkt)
       setScoreOverrides((prev) => new Map(prev).set(key, score));
+
       await persistScore(patrolId, stationId, score);
     },
     [persistScore]
@@ -910,6 +905,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       const pending = pendingRetry.get(key);
       if (!pending) return;
 
+      // håll UI i synk
       setScoreOverrides((prev) => new Map(prev).set(key, pending.score));
       setScoreSaveState((prev) => new Map(prev).set(key, "saving"));
 
@@ -947,9 +943,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
   const getStationScores = useCallback(
     (stationId: string) => {
-      return patrols
-        .map((patrol) => ({ patrol, score: getScore(patrol.id, stationId) }))
-        .sort((a, b) => b.score - a.score);
+      return patrols.map((patrol) => ({ patrol, score: getScore(patrol.id, stationId) })).sort((a, b) => b.score - a.score);
     },
     [patrols, getScore]
   );
@@ -963,8 +957,8 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
         activeCompetitions,
         archivedCompetitions,
 
-        selectableCompetitions,
-        allowedCompetitionIds,
+        scorerCompetitionIds,
+        scorerActiveCompetitions,
         canSelectCompetition,
 
         competition,
