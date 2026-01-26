@@ -319,27 +319,28 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       scoresByComp.set(cid, arr);
     }
 
-  const groupsByComp = new Map<string, ScoutGroup[]>();
-  for (const row of groupsRes.data ?? []) {
-    const cid = (row as any).competition_id;
-    const arr = groupsByComp.get(cid) ?? [];
-    arr.push(mapDbScoutGroup(row));
-    groupsByComp.set(cid, arr);
-  }
+ 
+    const groupsByComp = new Map<string, ScoutGroup[]>();
+    for (const row of groupsRes.data ?? []) {
+      const cid = (row as any).competition_id;
+      const arr = groupsByComp.get(cid) ?? [];
+      arr.push(mapDbScoutGroup(row));
+      groupsByComp.set(cid, arr);
+    }
 
-  const merged = mapped.map((c) => ({
-    ...c,
-    stations: stationsByComp.get(c.id) ?? [],
-    patrols: patrolsByComp.get(c.id) ?? [],
-    scores: scoresByComp.get(c.id) ?? [],
-    scoutGroups: groupsByComp.get(c.id) ?? [],
-  }));
+    const merged = mapped.map((c) => ({
+      ...c,
+      stations: stationsByComp.get(c.id) ?? [],
+      patrols: patrolsByComp.get(c.id) ?? [],
+      scores: scoresByComp.get(c.id) ?? [],
+      scoutGroups: groupsByComp.get(c.id) ?? [],
+    }));
 
-  setCompetitions(merged);
+    setCompetitions(merged);
 
-  // ✅ Behåll vald tävling om den fortfarande är giltig, annars välj default
-  setSelectedId((prev) => chooseSelectedId(prev));
-}, [isAdmin, user?.id]);
+    // Behåll vald tävling om den fortfarande är giltig, annars välj default
+    setSelectedId((prev) => chooseSelectedId(prev));
+  }, [isAdmin, user?.id]);
 
   const refreshTemplates = useCallback(async () => {
     const { data, error } = await supabase
