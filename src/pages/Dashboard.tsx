@@ -98,43 +98,45 @@ export default function Dashboard() {
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Top Patrols */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Trophy className="h-5 w-5 text-secondary" />
-              Topplista
-            </CardTitle>
-            <CardDescription>Ledande patruller just nu</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {topPatrols.length > 0 ? (
-              <div className="space-y-3">
-                {topPatrols.map((patrol, index) => (
-                  <div key={patrol.id} className="flex items-center gap-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-muted font-bold">
-                      {index + 1}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium truncate">{patrol.name}</p>
-                      <SectionBadge section={patrol.section} size="sm" />
-                    </div>
-                    <div className="text-right">
-                      <p className="font-bold">{patrol.totalScore}</p>
-                      <p className="text-xs text-muted-foreground">poäng</p>
-                    </div>
-                  </div>
-                ))}
+        {/* Top Patrols (admin only) */}
+{showScoreboard && (
+  <Card>
+    <CardHeader>
+      <CardTitle className="flex items-center gap-2">
+        <Trophy className="h-5 w-5 text-secondary" />
+        Topplista
+      </CardTitle>
+      <CardDescription>Ledande patruller just nu</CardDescription>
+    </CardHeader>
+    <CardContent>
+      {topPatrols.length > 0 ? (
+        <div className="space-y-3">
+          {topPatrols.map((patrol, index) => (
+            <div key={patrol.id} className="flex items-center gap-3">
+              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-muted font-bold">
+                {index + 1}
               </div>
-            ) : (
-              <p className="text-muted-foreground text-center py-4">
-                Inga poäng registrerade ännu
-              </p>
-            )}
-            <Button asChild variant="outline" className="w-full mt-4">
-              <Link to="/scoreboard">Visa fullständig resultattavla</Link>
-            </Button>
-          </CardContent>
-        </Card>
+              <div className="flex-1 min-w-0">
+                <p className="font-medium truncate">{patrol.name}</p>
+                <SectionBadge section={patrol.section} size="sm" />
+              </div>
+              <div className="text-right">
+                <p className="font-bold">{patrol.totalScore}</p>
+                <p className="text-xs text-muted-foreground">poäng</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-muted-foreground text-center py-4">Inga poäng registrerade ännu</p>
+      )}
+
+      <Button asChild variant="outline" className="w-full mt-4">
+        <Link to="/scoreboard">Visa fullständig resultattavla</Link>
+      </Button>
+    </CardContent>
+  </Card>
+)}
 
         {/* Patrols by Section */}
         <Card>
