@@ -1,4 +1,5 @@
 import { useCompetition } from '@/contexts/CompetitionContext';
+import { useAuth } from '@/contexts/AuthContext';
 import { StatCard } from '@/components/ui/stat-card';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Flag, Users, Trophy, Target, AlertCircle } from 'lucide-react';
@@ -10,7 +11,8 @@ import { CompetitionForm } from '@/components/forms/CompetitionForm';
 
 export default function Dashboard() {
   const { competition, stations, patrols, scores, getPatrolsWithScores } = useCompetition();
-  
+  const { isAdmin, isScorer } = useAuth();
+
   // Show prompt to create/select competition if none selected
   if (!competition) {
     return (
@@ -19,17 +21,17 @@ export default function Dashboard() {
           <h1 className="text-3xl font-bold tracking-tight">Välkommen till ScoutScore</h1>
           <p className="text-muted-foreground">Poängregistrering för scouttävlingar</p>
         </div>
-        
+
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12">
             <AlertCircle className="h-12 w-12 text-muted-foreground mb-4" />
             <h3 className="text-lg font-semibold mb-2">Ingen tävling vald</h3>
             <p className="text-muted-foreground text-center mb-4 max-w-md">
-              Skapa en ny tävling eller välj en befintlig för att komma igång med 
+              Skapa en ny tävling eller välj en befintlig för att komma igång med
               poängregistrering.
             </p>
             <div className="flex gap-3">
-              <CompetitionForm />
+              {isAdmin && <CompetitionForm />}
               <Button asChild variant="outline">
                 <Link to="/competitions">Visa alla tävlingar</Link>
               </Button>
@@ -42,7 +44,7 @@ export default function Dashboard() {
 
   const totalMaxScore = stations.reduce((sum, s) => sum + s.maxScore, 0);
   const topPatrols = getPatrolsWithScores().slice(0, 5);
-  
+
   const patrolsBySection = (Object.keys(SCOUT_SECTIONS) as ScoutSection[]).map(section => ({
     section,
     count: patrols.filter(p => p.section === section).length,
@@ -84,9 +86,11 @@ export default function Dashboard() {
         />
         <StatCard
           title="Genomsnittspoäng"
-          value={patrols.length > 0 
-            ? Math.round(scores.reduce((sum, s) => sum + s.score, 0) / patrols.length)
-            : 0}
+          value={
+            patrols.length > 0
+              ? Math.round(scores.reduce((sum, s) => sum + s.score, 0) / patrols.length)
+              : 0
+          }
           description="Per patrull"
           icon={Trophy}
         />
@@ -148,10 +152,10 @@ export default function Dashboard() {
                   <SectionBadge section={section} />
                   <div className="flex-1">
                     <div className="h-2 rounded-full bg-muted overflow-hidden">
-                      <div 
+                      <div
                         className={`h-full transition-all section-${section}`}
-                        style={{ 
-                          width: `${patrols.length > 0 ? (count / patrols.length) * 100 : 0}%` 
+                        style={{
+                          width: `${patrols.length > 0 ? (count / patrols.length) * 100 : 0}%`,
                         }}
                       />
                     </div>
@@ -160,9 +164,13 @@ export default function Dashboard() {
                 </div>
               ))}
             </div>
-            <Button asChild variant="outline" className="w-full mt-4">
-              <Link to="/patrols">Hantera patruller</Link>
-            </Button>
+
+            {/* ❌ Scorer ska inte se Hantera patruller */}
+            {isAdmin && (
+              <Button asChild variant="outline" className="w-full mt-4">
+                <Link to="/patrols">Hantera patruller</Link>
+              </Button>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -175,18 +183,25 @@ export default function Dashboard() {
         </CardHeader>
         <CardContent>
           <div className="flex flex-wrap gap-3">
-            <Button asChild>
-              <Link to="/stations">
-                <Flag className="h-4 w-4 mr-2" />
-                Hantera stationer
-              </Link>
-            </Button>
-            <Button asChild variant="secondary">
-              <Link to="/patrols">
-                <Users className="h-4 w-4 mr-2" />
-                Hantera patruller
-              </Link>
-            </Button>
+            {/* ❌ Scorer ska inte se dessa */}
+            {isAdmin && (
+              <>
+                <Button asChild>
+                  <Link to="/stations">
+                    <Flag className="h-4 w-4 mr-2" />
+                    Hantera stationer
+                  </Link>
+                </Button>
+                <Button asChild variant="secondary">
+                  <Link to="/patrols">
+                    <Users className="h-4 w-4 mr-2" />
+                    Hantera patruller
+                  </Link>
+                </Button>
+              </>
+            )}
+
+            {/* ✅ Alla med behörighet får registrera poäng */}
             <Button asChild variant="outline">
               <Link to="/scoring">
                 <Target className="h-4 w-4 mr-2" />
