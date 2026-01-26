@@ -219,7 +219,7 @@ else localStorage.removeItem(storageKey);
   } catch {
     // ignore
   }
-}, [selectedId, hasHydratedSelection]);
+}, [selectedId, hasHydratedSelection, storageKey]);
 
   const refreshAll = useCallback(async () => {
   // ✅ Vänta tills localStorage-hydrering är klar
@@ -349,7 +349,7 @@ else localStorage.removeItem(storageKey);
 
     setCompetitions(merged);
     setSelectedId((prev) => chooseSelectedId(prev));
-  }, [isAdmin, user?.id, hasHydratedSelection]);
+  }, [isAdmin, user?.id, hasHydratedSelection, storageKey]);
 
   const refreshTemplates = useCallback(async () => {
     const { data, error } = await supabase
