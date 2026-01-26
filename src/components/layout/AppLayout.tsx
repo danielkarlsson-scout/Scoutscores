@@ -71,10 +71,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       {/* Header */}
       <header className="sticky top-0 z-50 border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/60">
         <div className="container flex h-16 items-center justify-between px-4">
-          <Link to={isAdmin ? "/competitions" : "/"} className="flex items-center gap-2">
-  <TreePine className="h-8 w-8 text-primary" />
-  <span className="text-xl font-bold text-primary">ScoutScore</span>
-</Link>
+        <Link to="/competitions" className="flex items-center gap-2">
             <TreePine className="h-8 w-8 text-primary" />
             <span className="text-xl font-bold text-primary">ScoutScore</span>
           </Link>
