@@ -19,11 +19,18 @@ import { Button } from '@/components/ui/button';
 import { useCompetition } from '@/contexts/CompetitionContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { Badge } from '@/components/ui/badge';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const { competition } = useCompetition();
+  const { competition, scorerActiveCompetitions, selectCompetition, canSelectCompetition } = useCompetition();
   const { user, isAdmin, isScorer, signOut } = useAuth();
 
   // Define nav items based on role
@@ -69,14 +76,50 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             <span className="text-xl font-bold text-primary">ScoutScore</span>
           </Link>
 
-          {/* Current Competition Badge */}
-          {competition && (
-            <Link to={isAdmin ? "/competitions" : "/"} className="hidden lg:block">
-              <Badge variant="outline" className="gap-1 px-3 py-1 text-xs hover:bg-muted">
-                <Trophy className="h-3 w-3" />
-                {competition.name}
-              </Badge>
-            </Link>
+          {/* Current Competition / Selector */}
+          {(competition || (isScorer && !isAdmin && scorerActiveCompetitions.length > 0)) && (
+            <div className="hidden lg:block">
+              {isAdmin || !isScorer ? (
+                <Link to={isAdmin ? "/competitions" : "/"}>
+                  <Badge variant="outline" className="gap-1 px-3 py-1 text-xs hover:bg-muted">
+                    <Trophy className="h-3 w-3" />
+                    {competition?.name ?? "Välj tävling"}
+                  </Badge>
+                </Link>
+              ) : (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Badge
+                      role="button"
+                      tabIndex={0}
+                      variant="outline"
+                      className="gap-1 px-3 py-1 text-xs hover:bg-muted cursor-pointer"
+                    >
+                      <Trophy className="h-3 w-3" />
+                      {competition?.name ?? "Välj tävling"}
+                    </Badge>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="center" className="min-w-64">
+                    {scorerActiveCompetitions.map((c) => (
+                      <DropdownMenuItem
+                        key={c.id}
+                        onSelect={() => {
+                          if (canSelectCompetition(c.id)) selectCompetition(c.id);
+                        }}
+                        className="flex items-center justify-between"
+                      >
+                        <span className="truncate">{c.name}</span>
+                        {c.id === competition?.id ? <span className="text-xs text-muted-foreground">Vald</span> : null}
+                      </DropdownMenuItem>
+                    ))}
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem asChild>
+                      <Link to="/awaiting-access">Ansök om fler tävlingar</Link>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+            </div>
           )}
           
           {/* Desktop Navigation */}
