@@ -168,16 +168,61 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         {/* Mobile Navigation */}
         {mobileMenuOpen && (
           <nav className="md:hidden border-t bg-card p-4">
-            {competition && (
-              <Link 
-                to={isAdmin ? "/competitions" : "/"}
-                onClick={() => setMobileMenuOpen(false)}
-                className="flex items-center gap-2 px-4 py-2 mb-2 rounded-lg bg-muted"
-              >
-                <Trophy className="h-4 w-4 text-primary" />
-                <span className="text-sm font-medium">{competition.name}</span>
-              </Link>
-            )}
+            {/* Mobil: visa tävlingsväljare även för scorer */}
+{(competition || (isScorer && !isAdmin && scorerActiveCompetitions.length > 0)) && (
+  <div className="mb-2">
+    {isAdmin || !isScorer ? (
+      <Link
+        to={isAdmin ? "/competitions" : "/"}
+        onClick={() => setMobileMenuOpen(false)}
+        className="flex items-center gap-2 px-4 py-2 rounded-lg bg-muted"
+      >
+        <Trophy className="h-4 w-4 text-primary" />
+        <span className="text-sm font-medium">{competition?.name ?? "Välj tävling"}</span>
+      </Link>
+    ) : (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="w-full justify-between h-10 px-4"
+          >
+            <span className="flex items-center gap-2">
+              <Trophy className="h-4 w-4" />
+              <span className="truncate">{competition?.name ?? "Välj tävling"}</span>
+            </span>
+            <span className="text-xs text-muted-foreground">Byt</span>
+          </Button>
+        </DropdownMenuTrigger>
+
+        <DropdownMenuContent align="start" className="min-w-[18rem]">
+          {scorerActiveCompetitions.map((c) => (
+            <DropdownMenuItem
+              key={c.id}
+              onSelect={() => {
+                if (canSelectCompetition(c.id)) selectCompetition(c.id);
+                setMobileMenuOpen(false); // stäng menyn efter val
+              }}
+              className="flex items-center justify-between"
+            >
+              <span className="truncate">{c.name}</span>
+              {c.id === competition?.id ? <span className="text-xs text-muted-foreground">Vald</span> : null}
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={() => setMobileMenuOpen(false)}
+            asChild
+          >
+            <Link to="/awaiting-access">Ansök om fler tävlingar</Link>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    )}
+  </div>
+)}
             <div className="flex flex-col gap-2">
               {navItems.map(item => (
                 <Link
