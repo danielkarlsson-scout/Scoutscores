@@ -12,6 +12,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 import { SCOUT_SECTIONS, ScoutSection } from '@/types/competition';
 import { SectionBadge } from '@/components/ui/section-badge';
+import { Link } from 'react-router-dom';
 
 interface PermissionRequest {
   id: string;
@@ -287,10 +288,10 @@ export default function AwaitingAccess() {
       {/* Simple Header */}
       <header className="sticky top-0 z-50 border-b bg-card/95 backdrop-blur">
         <div className="container flex h-16 items-center justify-between px-4">
-          <div className="flex items-center gap-2">
-            <TreePine className="h-8 w-8 text-primary" />
-            <span className="text-xl font-bold text-primary">ScoutScore</span>
-          </div>
+          <Link to="/" className="flex items-center gap-2">
+  <TreePine className="h-8 w-8 text-primary" />
+  <span className="text-xl font-bold text-primary">ScoutScore</span>
+</Link>
           <Button variant="ghost" size="sm" onClick={signOut}>
             <LogOut className="h-4 w-4 mr-2" />
             Logga ut
