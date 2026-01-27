@@ -31,7 +31,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const { competition, scorerActiveCompetitions, selectCompetition, canSelectCompetition } = useCompetition();
-  const { user, isAdmin, isScorer, signOut } = useAuth();
+  const { user, isGlobalAdmin, isCompetitionAdmin, isScorer, signOut } = useAuth();
+  const isAdmin = isGlobalAdmin || isCompetitionAdmin;
 
   // Define nav items based on role
   const getNavItems = () => {
@@ -71,7 +72,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       {/* Header */}
       <header className="sticky top-0 z-50 border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/60">
         <div className="container flex h-16 items-center justify-between px-4">
-        <Link to="/competitions" className="flex items-center gap-2">
+          <Link to="/competitions" className="flex items-center gap-2">
             <TreePine className="h-8 w-8 text-primary" />
             <span className="text-xl font-bold text-primary">ScoutScore</span>
           </Link>
@@ -88,21 +89,16 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                 </Link>
               ) : (
                 <DropdownMenu>
-                  {/*
-                    OBS: DropdownMenuTrigger med `asChild` kräver att barnet kan ta emot ref + onClick.
-                    `Badge` gör inte det (i shadcn), vilket gör att klick inte öppnar menyn.
-                    Därför använder vi en Button som ser ut som en badge.
-                  */}
                   <DropdownMenuTrigger asChild>
-                    <Button
-                      type="button"
+                    <Badge
+                      role="button"
+                      tabIndex={0}
                       variant="outline"
-                      size="sm"
-                      className="h-7 gap-1 px-3 text-xs"
+                      className="gap-1 px-3 py-1 text-xs hover:bg-muted cursor-pointer"
                     >
                       <Trophy className="h-3 w-3" />
                       {competition?.name ?? "Välj tävling"}
-                    </Button>
+                    </Badge>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="center" className="min-w-64">
                     {scorerActiveCompetitions.map((c) => (
@@ -168,61 +164,16 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         {/* Mobile Navigation */}
         {mobileMenuOpen && (
           <nav className="md:hidden border-t bg-card p-4">
-            {/* Mobil: visa tävlingsväljare även för scorer */}
-{(competition || (isScorer && !isAdmin && scorerActiveCompetitions.length > 0)) && (
-  <div className="mb-2">
-    {isAdmin || !isScorer ? (
-      <Link
-        to={isAdmin ? "/competitions" : "/"}
-        onClick={() => setMobileMenuOpen(false)}
-        className="flex items-center gap-2 px-4 py-2 rounded-lg bg-muted"
-      >
-        <Trophy className="h-4 w-4 text-primary" />
-        <span className="text-sm font-medium">{competition?.name ?? "Välj tävling"}</span>
-      </Link>
-    ) : (
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="w-full justify-between h-10 px-4"
-          >
-            <span className="flex items-center gap-2">
-              <Trophy className="h-4 w-4" />
-              <span className="truncate">{competition?.name ?? "Välj tävling"}</span>
-            </span>
-            <span className="text-xs text-muted-foreground">Byt</span>
-          </Button>
-        </DropdownMenuTrigger>
-
-        <DropdownMenuContent align="start" className="min-w-[18rem]">
-          {scorerActiveCompetitions.map((c) => (
-            <DropdownMenuItem
-              key={c.id}
-              onSelect={() => {
-                if (canSelectCompetition(c.id)) selectCompetition(c.id);
-                setMobileMenuOpen(false); // stäng menyn efter val
-              }}
-              className="flex items-center justify-between"
-            >
-              <span className="truncate">{c.name}</span>
-              {c.id === competition?.id ? <span className="text-xs text-muted-foreground">Vald</span> : null}
-            </DropdownMenuItem>
-          ))}
-          <DropdownMenuSeparator />
-          <DropdownMenuItem
-            onSelect={() => setMobileMenuOpen(false)}
-            asChild
-          >
-            <Link to="/awaiting-access">Ansök om fler tävlingar</Link>
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-    )}
-  </div>
-)}
+            {competition && (
+              <Link 
+                to={isAdmin ? "/competitions" : "/"}
+                onClick={() => setMobileMenuOpen(false)}
+                className="flex items-center gap-2 px-4 py-2 mb-2 rounded-lg bg-muted"
+              >
+                <Trophy className="h-4 w-4 text-primary" />
+                <span className="text-sm font-medium">{competition.name}</span>
+              </Link>
+            )}
             <div className="flex flex-col gap-2">
               {navItems.map(item => (
                 <Link
@@ -251,7 +202,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             {user && (
               <div className="mt-4 pt-4 border-t text-sm text-muted-foreground px-4">
                 {user.email}
-                {isAdmin && <Badge variant="secondary" className="ml-2">Admin</Badge>}
+                {isGlobalAdmin && <Badge variant="secondary" className="ml-2">Global admin</Badge>}
+                {!isGlobalAdmin && isCompetitionAdmin && <Badge variant="secondary" className="ml-2">Tävlingsadmin</Badge>}
                 {isScorer && !isAdmin && <Badge variant="outline" className="ml-2">Scorer</Badge>}
               </div>
             )}
