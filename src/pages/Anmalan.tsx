@@ -262,6 +262,7 @@ export default function Anmalan() {
             <option value="upptackare">Upptäckare</option>
             <option value="aventyrare">Äventyrare</option>
             <option value="utmanare">Utmanare</option>
+            <option value="rover">Rover</option>
           </select>
         </div>
 
