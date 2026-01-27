@@ -24,25 +24,32 @@ import { useToast } from '@/hooks/use-toast';
 import { SCOUT_SECTIONS, type ScoutSection } from '@/types/competition';
 import { SectionBadge } from '@/components/ui/section-badge';
 
-// Helper to query tables that may not be in types yet
-const queryTable = (tableName: string) => (supabase as any).from(tableName);
+// Helper to query tables that may not be in generated types yet
+const queryTable = (tableName: string) => {
+  return (supabase as any).from(tableName);
+};
 
 interface UserWithRoles {
   userId: string;
   email: string;
   displayName: string | null;
 
-  // ONLY from user_roles.role='admin' (set in DB)
+  // global role (read-only in UI)
   isGlobalAdmin: boolean;
 
-  // Per competition from competition_admins
-  competitionAdminOf: string[]; // competition_id[]
-
-  // Global scorer role
+  // scorer role (still stored in user_roles)
   isScorer: boolean;
 
   // permissions per competition
   permissions: { competition_id: string | null; section: ScoutSection }[];
+
+  // competition admin memberships
+  adminOfCompetitions: string[];
+}
+
+interface CompetitionAdminRow {
+  competition_id: string;
+  user_id: string;
 }
 
 interface PermissionRequest {
@@ -59,89 +66,88 @@ interface PermissionRequest {
 
 export default function Admin() {
   const { isGlobalAdmin, isCompetitionAdmin, user: currentUser } = useAuth();
-  const isAdmin = isGlobalAdmin || isCompetitionAdmin;
-
-  const { activeCompetitions, archivedCompetitions } = useCompetition();
+  const { activeCompetitions, archivedCompetitions, competition: currentCompetition } = useCompetition();
   const { toast } = useToast();
+
+  // Any admin can access admin page, but competition admin should be scoped to their competition
+  const canViewAdmin = isGlobalAdmin || isCompetitionAdmin;
 
   const [users, setUsers] = useState<UserWithRoles[]>([]);
   const [requests, setRequests] = useState<PermissionRequest[]>([]);
+  const [competitionAdmins, setCompetitionAdmins] = useState<CompetitionAdminRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [processingRequest, setProcessingRequest] = useState<string | null>(null);
 
+  // competition selector state
   const [selectedCompetitionId, setSelectedCompetitionId] = useState<string>('');
 
+  // unified competitions list
   const allCompetitions = useMemo(
     () => [...(activeCompetitions ?? []), ...(archivedCompetitions ?? [])],
     [activeCompetitions, archivedCompetitions]
   );
 
+  // Prefer current selected competition from context if available
   useEffect(() => {
-    if (!selectedCompetitionId && allCompetitions.length > 0) {
-      setSelectedCompetitionId(allCompetitions[0].id);
+    if (!selectedCompetitionId) {
+      if (currentCompetition?.id) {
+        setSelectedCompetitionId(currentCompetition.id);
+      } else if (allCompetitions.length > 0) {
+        setSelectedCompetitionId(allCompetitions[0].id);
+      }
     }
-  }, [allCompetitions, selectedCompetitionId]);
+  }, [allCompetitions, currentCompetition?.id, selectedCompetitionId]);
 
-  // For permission gating: if you're competition admin, you should only be able to manage within competitions you admin.
-  // We can verify that by checking the current user's admin rows from competition_admins.
-  const [myCompetitionAdminOf, setMyCompetitionAdminOf] = useState<string[]>([]);
-  useEffect(() => {
-    const run = async () => {
-      if (!currentUser?.id) {
-        setMyCompetitionAdminOf([]);
-        return;
-      }
-      // Global admins can manage all competitions, no need to fetch.
-      if (isGlobalAdmin) {
-        setMyCompetitionAdminOf(['*']);
-        return;
-      }
+  const selectedCompetition = useMemo(
+    () => allCompetitions.find((c) => c.id === selectedCompetitionId),
+    [allCompetitions, selectedCompetitionId]
+  );
 
-      const { data, error } = await queryTable('competition_admins')
-        .select('competition_id')
-        .eq('user_id', currentUser.id);
-
-      if (error) {
-        console.error('Failed to load my competition admin list:', error);
-        setMyCompetitionAdminOf([]);
-        return;
-      }
-
-      setMyCompetitionAdminOf((data ?? []).map((r: any) => r.competition_id as string));
-    };
-
-    run();
-  }, [currentUser?.id, isGlobalAdmin]);
-
-  const iCanManageSelectedCompetition = useMemo(() => {
-    if (!selectedCompetitionId) return false;
+  const currentUserIsAdminForSelectedCompetition = useMemo(() => {
     if (isGlobalAdmin) return true;
-    return myCompetitionAdminOf.includes(selectedCompetitionId);
-  }, [selectedCompetitionId, isGlobalAdmin, myCompetitionAdminOf]);
+    // isCompetitionAdmin usually means "admin for currently selected competition in app context".
+    // But here we allow by DB membership too, since user can pick competition in dropdown.
+    // We'll check membership using competition_admins we fetched.
+    if (!currentUser?.id || !selectedCompetitionId) return false;
+    return competitionAdmins.some(
+      (row) => row.competition_id === selectedCompetitionId && row.user_id === currentUser.id
+    );
+  }, [competitionAdmins, currentUser?.id, isGlobalAdmin, selectedCompetitionId]);
 
+  // Fetch users, roles, scorer permissions, and competition admins
   const fetchUsers = async () => {
     try {
+      // profiles
       const { data: profiles, error: profilesError } = await queryTable('profiles')
         .select('user_id, email, display_name');
+
       if (profilesError) throw profilesError;
 
+      // roles (global admin + scorer role live here)
       const { data: roles, error: rolesError } = await queryTable('user_roles')
         .select('user_id, role');
+
       if (rolesError) throw rolesError;
 
-      const { data: compAdmins, error: compAdminsError } = await queryTable('competition_admins')
-        .select('user_id, competition_id');
-      if (compAdminsError) throw compAdminsError;
-
+      // scorer permissions (with competition_id)
       const { data: permissions, error: permissionsError } = await queryTable('scorer_permissions')
         .select('user_id, competition_id, section');
+
       if (permissionsError) throw permissionsError;
+
+      // competition admins (competition_id + user_id)
+      const { data: compAdmins, error: compAdminsError } = await queryTable('competition_admins')
+        .select('competition_id, user_id');
+
+      if (compAdminsError) throw compAdminsError;
+
+      setCompetitionAdmins((compAdmins ?? []) as CompetitionAdminRow[]);
 
       const usersWithRoles: UserWithRoles[] = (profiles ?? []).map((profile: any) => {
         const userRoles = roles?.filter((r: any) => r.user_id === profile.user_id) ?? [];
         const userPermissions = permissions?.filter((p: any) => p.user_id === profile.user_id) ?? [];
-        const userCompAdmins = compAdmins?.filter((a: any) => a.user_id === profile.user_id) ?? [];
+        const userCompAdmins = (compAdmins ?? []).filter((a: any) => a.user_id === profile.user_id);
 
         return {
           userId: profile.user_id,
@@ -149,11 +155,11 @@ export default function Admin() {
           displayName: profile.display_name,
           isGlobalAdmin: userRoles.some((r: any) => r.role === 'admin'),
           isScorer: userRoles.some((r: any) => r.role === 'scorer'),
-          competitionAdminOf: userCompAdmins.map((a: any) => a.competition_id as string),
           permissions: userPermissions.map((p: any) => ({
             competition_id: p.competition_id ?? null,
             section: p.section as ScoutSection,
           })),
+          adminOfCompetitions: userCompAdmins.map((a: any) => a.competition_id),
         };
       });
 
@@ -170,6 +176,7 @@ export default function Admin() {
     }
   };
 
+  // fetch pending permission requests and enrich with profile + competition name
   const fetchRequests = async (profiles: any[]) => {
     try {
       const { data, error } = await queryTable('permission_requests')
@@ -181,7 +188,7 @@ export default function Admin() {
 
       const enrichedRequests: PermissionRequest[] = (data ?? []).map((req: any) => {
         const profile = profiles?.find((p: any) => p.user_id === req.user_id);
-        const competition = allCompetitions.find((c) => c.id === req.competition_id);
+        const competition = allCompetitions.find(c => c.id === req.competition_id);
         return {
           ...req,
           userEmail: profile?.email,
@@ -204,48 +211,61 @@ export default function Admin() {
   };
 
   useEffect(() => {
-    if (isAdmin) {
+    if (canViewAdmin) {
       fetchAll();
     } else {
       setUsers([]);
       setRequests([]);
+      setCompetitionAdmins([]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin]);
+  }, [canViewAdmin]);
 
+  // Approve request: add scorer role if needed, add scorer_permissions row (with competition_id), update request
   const handleApproveRequest = async (request: PermissionRequest) => {
+    // Competition admins should only approve requests for their competition
+    if (!isGlobalAdmin) {
+      if (!request.competition_id || request.competition_id !== selectedCompetitionId) {
+        toast({ title: 'Fel tävling vald', variant: 'destructive' });
+        return;
+      }
+      if (!currentUserIsAdminForSelectedCompetition) {
+        toast({ title: 'Saknar behörighet', variant: 'destructive' });
+        return;
+      }
+    }
+
     setProcessingRequest(request.id);
     try {
-      const u = users.find((x) => x.userId === request.user_id);
+      // Add scorer role if not already present
+      const u = users.find(u => u.userId === request.user_id);
       if (u && !u.isScorer && !u.isGlobalAdmin) {
         const { error: rError } = await queryTable('user_roles')
           .insert({ user_id: request.user_id, role: 'scorer' });
         if (rError) throw rError;
       }
 
-      const { error: pError } = await queryTable('scorer_permissions').upsert(
-        {
-          user_id: request.user_id,
-          competition_id: request.competition_id,
-          section: request.section,
-        },
-        { onConflict: 'user_id,competition_id,section' }
-      );
+      const { error: pError } = await queryTable('scorer_permissions')
+        .upsert(
+          {
+            user_id: request.user_id,
+            competition_id: request.competition_id,
+            section: request.section,
+          },
+          { onConflict: 'user_id,competition_id,section' }
+        );
       if (pError) throw pError;
 
       const { error: uError } = await queryTable('permission_requests')
         .update({
           status: 'approved',
           reviewed_by: currentUser?.id,
-          reviewed_at: new Date().toISOString(),
+          reviewed_at: new Date().toISOString()
         })
         .eq('id', request.id);
       if (uError) throw uError;
 
-      toast({
-        title: 'Ansökan godkänd',
-        description: `Behörighet för ${SCOUT_SECTIONS[request.section].name} tilldelad.`,
-      });
+      toast({ title: 'Ansökan godkänd', description: `Behörighet för ${SCOUT_SECTIONS[request.section].name} tilldelad.` });
       await fetchAll();
     } catch (error) {
       console.error('Error approving request:', error);
@@ -255,13 +275,24 @@ export default function Admin() {
   };
 
   const handleDenyRequest = async (request: PermissionRequest) => {
+    if (!isGlobalAdmin) {
+      if (!request.competition_id || request.competition_id !== selectedCompetitionId) {
+        toast({ title: 'Fel tävling vald', variant: 'destructive' });
+        return;
+      }
+      if (!currentUserIsAdminForSelectedCompetition) {
+        toast({ title: 'Saknar behörighet', variant: 'destructive' });
+        return;
+      }
+    }
+
     setProcessingRequest(request.id);
     try {
       const { error } = await queryTable('permission_requests')
         .update({
           status: 'denied',
           reviewed_by: currentUser?.id,
-          reviewed_at: new Date().toISOString(),
+          reviewed_at: new Date().toISOString()
         })
         .eq('id', request.id);
       if (error) throw error;
@@ -275,18 +306,27 @@ export default function Admin() {
     setProcessingRequest(null);
   };
 
-  // ✅ This is the ONLY "admin toggle" in UI: per-competition admin.
+  /**
+   * Admin checkbox = competition admin for selected competition.
+   * IMPORTANT: Global admin is read-only and MUST NOT be toggled from UI.
+   */
   const toggleCompetitionAdmin = async (user: UserWithRoles) => {
     if (!selectedCompetitionId) {
       toast({ title: 'Välj tävling först', variant: 'destructive' });
       return;
     }
 
-    // Competition admins should only be able to manage within competitions they admin.
-    if (!iCanManageSelectedCompetition) {
+    // If you are only competition admin, you may only manage admins for your competition
+    if (!isGlobalAdmin && !currentUserIsAdminForSelectedCompetition) {
+      toast({ title: 'Saknar behörighet för vald tävling', variant: 'destructive' });
+      return;
+    }
+
+    // Don't allow editing global admin status from UI (and don't allow removing global admin's effective power)
+    if (user.isGlobalAdmin) {
       toast({
-        title: 'Åtkomst nekad',
-        description: 'Du kan bara hantera admins i tävlingar där du själv är tävlingsadmin.',
+        title: 'Global admin',
+        description: 'Global admin kan bara tilldelas/ändras i databasen.',
         variant: 'destructive',
       });
       return;
@@ -294,17 +334,19 @@ export default function Admin() {
 
     setSaving(user.userId);
     try {
-      const already = user.competitionAdminOf.includes(selectedCompetitionId);
+      const isAdminForThisCompetition = competitionAdmins.some(
+        (row) => row.competition_id === selectedCompetitionId && row.user_id === user.userId
+      );
 
-      if (already) {
+      if (isAdminForThisCompetition) {
         const { error } = await queryTable('competition_admins')
           .delete()
-          .eq('user_id', user.userId)
-          .eq('competition_id', selectedCompetitionId);
+          .eq('competition_id', selectedCompetitionId)
+          .eq('user_id', user.userId);
         if (error) throw error;
       } else {
         const { error } = await queryTable('competition_admins')
-          .insert({ user_id: user.userId, competition_id: selectedCompetitionId });
+          .insert({ competition_id: selectedCompetitionId, user_id: user.userId });
         if (error) throw error;
       }
 
@@ -318,6 +360,12 @@ export default function Admin() {
   };
 
   const toggleScorerRole = async (user: UserWithRoles) => {
+    // competition admin should be able to set scorer for their competition (and global admin for all)
+    if (!isGlobalAdmin && !currentUserIsAdminForSelectedCompetition) {
+      toast({ title: 'Saknar behörighet för vald tävling', variant: 'destructive' });
+      return;
+    }
+
     setSaving(user.userId);
     try {
       if (user.isScorer) {
@@ -327,6 +375,8 @@ export default function Admin() {
           .eq('role', 'scorer');
         if (error) throw error;
 
+        // remove all scorer permissions (global) OR optionally restrict to selectedCompetitionId
+        // We keep existing behavior: remove ALL (since scorer role implies permissions)
         const { error: e2 } = await queryTable('scorer_permissions')
           .delete()
           .eq('user_id', user.userId);
@@ -351,19 +401,15 @@ export default function Admin() {
       return;
     }
 
-    if (!iCanManageSelectedCompetition) {
-      toast({
-        title: 'Åtkomst nekad',
-        description: 'Du kan bara hantera behörigheter i tävlingar där du själv är tävlingsadmin.',
-        variant: 'destructive',
-      });
+    if (!isGlobalAdmin && !currentUserIsAdminForSelectedCompetition) {
+      toast({ title: 'Saknar behörighet för vald tävling', variant: 'destructive' });
       return;
     }
 
     setSaving(user.userId);
     try {
       const hasSection = user.permissions.some(
-        (p) => p.competition_id === selectedCompetitionId && p.section === section
+        p => p.competition_id === selectedCompetitionId && p.section === section
       );
 
       if (hasSection) {
@@ -378,7 +424,6 @@ export default function Admin() {
           .insert({ user_id: user.userId, competition_id: selectedCompetitionId, section });
         if (error) throw error;
       }
-
       await fetchAll();
       toast({ title: 'Behörighet uppdaterad' });
     } catch (error) {
@@ -389,21 +434,42 @@ export default function Admin() {
   };
 
   const deleteUser = async (user: UserWithRoles) => {
+    // Usually only global admin should delete users (optional).
+    // If you want competition admins to delete users, remove this check.
+    if (!isGlobalAdmin) {
+      toast({
+        title: 'Endast global admin',
+        description: 'Att ta bort användare är endast tillåtet för global admin.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     setSaving(user.userId);
     try {
-      const { error: p0 } = await queryTable('competition_admins').delete().eq('user_id', user.userId);
+      const { error: p0 } = await queryTable('competition_admins')
+        .delete()
+        .eq('user_id', user.userId);
       if (p0) throw p0;
 
-      const { error: p1 } = await queryTable('scorer_permissions').delete().eq('user_id', user.userId);
+      const { error: p1 } = await queryTable('scorer_permissions')
+        .delete()
+        .eq('user_id', user.userId);
       if (p1) throw p1;
 
-      const { error: p2 } = await queryTable('user_roles').delete().eq('user_id', user.userId);
+      const { error: p2 } = await queryTable('user_roles')
+        .delete()
+        .eq('user_id', user.userId);
       if (p2) throw p2;
 
-      const { error: p3 } = await queryTable('permission_requests').delete().eq('user_id', user.userId);
+      const { error: p3 } = await queryTable('permission_requests')
+        .delete()
+        .eq('user_id', user.userId);
       if (p3) throw p3;
 
-      const { error: p4 } = await queryTable('profiles').delete().eq('user_id', user.userId);
+      const { error: p4 } = await queryTable('profiles')
+        .delete()
+        .eq('user_id', user.userId);
       if (p4) throw p4;
 
       toast({ title: 'Användare borttagen', description: `${user.email} har tagits bort.` });
@@ -415,21 +481,25 @@ export default function Admin() {
     setSaving(null);
   };
 
+  // Section colors matching SectionBadge
   const sectionColors: Record<ScoutSection, string> = {
     sparare: 'bg-[hsl(200,70%,50%)] text-white hover:bg-[hsl(200,70%,45%)]',
     upptackare: 'bg-[hsl(150,60%,40%)] text-white hover:bg-[hsl(150,60%,35%)]',
     aventyrare: 'bg-[hsl(35,70%,50%)] text-white hover:bg-[hsl(35,70%,45%)]',
     utmanare: 'bg-[hsl(280,50%,45%)] text-white hover:bg-[hsl(280,50%,40%)]',
-  };
+    // rover? (if you added it in enum/types, add colors here too)
+    // rover: 'bg-[hsl(...)] text-white hover:bg-[hsl(...)]',
+  } as any;
 
   const sectionOutlineColors: Record<ScoutSection, string> = {
     sparare: 'border-[hsl(200,70%,50%)] text-[hsl(200,70%,40%)] hover:bg-[hsl(200,70%,50%)] hover:text-white',
     upptackare: 'border-[hsl(150,60%,40%)] text-[hsl(150,60%,35%)] hover:bg-[hsl(150,60%,40%)] hover:text-white',
     aventyrare: 'border-[hsl(35,70%,50%)] text-[hsl(35,70%,45%)] hover:bg-[hsl(35,70%,50%)] hover:text-white',
     utmanare: 'border-[hsl(280,50%,45%)] text-[hsl(280,50%,40%)] hover:bg-[hsl(280,50%,45%)] hover:text-white',
-  };
+    // rover: 'border-[hsl(...)] text-[hsl(...)] hover:bg-[hsl(...)] hover:text-white',
+  } as any;
 
-  if (!isAdmin) {
+  if (!canViewAdmin) {
     return (
       <div className="space-y-6">
         <div>
@@ -454,6 +524,7 @@ export default function Admin() {
         <p className="text-muted-foreground">Hantera användare och behörigheter</p>
       </div>
 
+      {/* Pending Permission Requests */}
       {requests.length > 0 && (
         <Card className="border-primary/50">
           <CardHeader>
@@ -467,11 +538,16 @@ export default function Admin() {
           <CardContent>
             <div className="space-y-3">
               {requests.map((request) => (
-                <div key={request.id} className="flex items-center justify-between rounded-lg border p-4 bg-muted/50">
+                <div
+                  key={request.id}
+                  className="flex items-center justify-between rounded-lg border p-4 bg-muted/50"
+                >
                   <div className="flex items-center gap-4">
                     <div>
                       <p className="font-medium">{request.userDisplayName || request.userEmail}</p>
-                      {request.userDisplayName && <p className="text-sm text-muted-foreground">{request.userEmail}</p>}
+                      {request.userDisplayName && (
+                        <p className="text-sm text-muted-foreground">{request.userEmail}</p>
+                      )}
                       <p className="text-xs text-muted-foreground mt-1">
                         <Trophy className="inline h-3 w-3 mr-1" />
                         {request.competitionName}
@@ -484,7 +560,11 @@ export default function Admin() {
                     <SectionBadge section={request.section} />
                   </div>
                   <div className="flex items-center gap-2">
-                    <Button size="sm" onClick={() => handleApproveRequest(request)} disabled={processingRequest === request.id}>
+                    <Button
+                      size="sm"
+                      onClick={() => handleApproveRequest(request)}
+                      disabled={processingRequest === request.id}
+                    >
                       {processingRequest === request.id ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
                       ) : (
@@ -518,7 +598,13 @@ export default function Admin() {
             Användare
           </CardTitle>
           <CardDescription>
-            “Admin” här betyder <strong>Tävlingsadmin för vald tävling</strong>. Global admin kan bara sättas i databasen.
+            <span className="block">
+              “Admin” här betyder <strong>Tävlingsadmin</strong> för vald tävling.
+              <span className="ml-1">Global admin kan bara sättas i databasen.</span>
+            </span>
+            <span className="block mt-1">
+              Scorers kan bara registrera poäng för sina tilldelade avdelningar (per tävling).
+            </span>
           </CardDescription>
         </CardHeader>
 
@@ -531,32 +617,40 @@ export default function Admin() {
             <p className="text-muted-foreground text-center py-8">Inga registrerade användare.</p>
           ) : (
             <>
-              <div className="flex items-center gap-3 mb-4">
-                <span className="text-sm text-muted-foreground">Tävling:</span>
-                <select
-                  className="border rounded-md px-3 py-2 text-sm bg-background"
-                  value={selectedCompetitionId}
-                  onChange={(e) => setSelectedCompetitionId(e.target.value)}
-                >
-                  {allCompetitions.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-muted-foreground">Tävling:</span>
+                  <select
+                    className="border rounded-md px-3 py-2 text-sm bg-background"
+                    value={selectedCompetitionId}
+                    onChange={(e) => setSelectedCompetitionId(e.target.value)}
+                  >
+                    {allCompetitions.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-                {!iCanManageSelectedCompetition && (
-                  <Badge variant="destructive" className="ml-auto">
-                    Du saknar admin i denna tävling
+                {!isGlobalAdmin && (
+                  <Badge variant="secondary">
+                    Du administrerar: {selectedCompetition?.name ?? '—'}
                   </Badge>
                 )}
               </div>
+
+              {/* If competition admin but not admin of chosen competition -> warn */}
+              {!isGlobalAdmin && selectedCompetitionId && !currentUserIsAdminForSelectedCompetition && (
+                <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm">
+                  Du är inte tävlingsadmin för vald tävling. Välj en tävling du administrerar eller be en admin lägga till dig.
+                </div>
+              )}
 
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Användare</TableHead>
-                    <TableHead>Global admin</TableHead>
                     <TableHead>Admin (tävling)</TableHead>
                     <TableHead>Scorer</TableHead>
                     <TableHead>Avdelningar</TableHead>
@@ -566,30 +660,39 @@ export default function Admin() {
 
                 <TableBody>
                   {users.map((u) => {
-                    const isCompAdminSelected = selectedCompetitionId
-                      ? u.competitionAdminOf.includes(selectedCompetitionId)
+                    const isCompetitionAdminForSelected = !!selectedCompetitionId
+                      ? u.adminOfCompetitions.includes(selectedCompetitionId)
                       : false;
+
+                    const canEditThisRow =
+                      isGlobalAdmin || currentUserIsAdminForSelectedCompetition;
 
                     return (
                       <TableRow key={u.userId}>
                         <TableCell>
-                          <div>
-                            <p className="font-medium">{u.displayName || u.email}</p>
-                            {u.displayName && <p className="text-sm text-muted-foreground">{u.email}</p>}
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <p className="font-medium">{u.displayName || u.email}</p>
+                              {u.isGlobalAdmin && (
+                                <Badge variant="secondary">Global admin</Badge>
+                              )}
+                            </div>
+                            {u.displayName && (
+                              <p className="text-sm text-muted-foreground">{u.email}</p>
+                            )}
                           </div>
                         </TableCell>
 
-                        {/* Read-only global admin */}
-                        <TableCell>
-                          <Checkbox checked={u.isGlobalAdmin} disabled />
-                        </TableCell>
-
-                        {/* ✅ This is the admin toggle (competition admin) */}
                         <TableCell>
                           <Checkbox
-                            checked={isCompAdminSelected}
+                            checked={u.isGlobalAdmin ? true : isCompetitionAdminForSelected}
                             onCheckedChange={() => toggleCompetitionAdmin(u)}
-                            disabled={saving === u.userId || !selectedCompetitionId || !iCanManageSelectedCompetition}
+                            disabled={
+                              saving === u.userId ||
+                              !selectedCompetitionId ||
+                              !canEditThisRow ||
+                              u.isGlobalAdmin
+                            }
                           />
                         </TableCell>
 
@@ -597,12 +700,17 @@ export default function Admin() {
                           <Checkbox
                             checked={u.isScorer}
                             onCheckedChange={() => toggleScorerRole(u)}
-                            disabled={saving === u.userId || u.isGlobalAdmin || !iCanManageSelectedCompetition}
+                            disabled={
+                              saving === u.userId ||
+                              !selectedCompetitionId ||
+                              !canEditThisRow ||
+                              u.isGlobalAdmin // optional: global admin doesn't need scorer role
+                            }
                           />
                         </TableCell>
 
                         <TableCell>
-                          {u.isGlobalAdmin || isCompAdminSelected ? (
+                          {u.isGlobalAdmin || isCompetitionAdminForSelected ? (
                             <Badge variant="secondary">Alla avdelningar</Badge>
                           ) : u.isScorer ? (
                             <div className="flex flex-wrap gap-2">
@@ -610,7 +718,6 @@ export default function Admin() {
                                 const enabled = u.permissions.some(
                                   (p) => p.competition_id === selectedCompetitionId && p.section === section
                                 );
-
                                 return (
                                   <Badge
                                     key={section}
@@ -618,7 +725,7 @@ export default function Admin() {
                                     className={cn(
                                       'cursor-pointer border transition-colors',
                                       enabled ? sectionColors[section] : sectionOutlineColors[section],
-                                      !iCanManageSelectedCompetition && 'pointer-events-none opacity-50'
+                                      !canEditThisRow && 'opacity-60 pointer-events-none'
                                     )}
                                     onClick={() => toggleSectionPermission(u, section)}
                                   >
@@ -642,7 +749,7 @@ export default function Admin() {
                                 disabled={
                                   saving === u.userId ||
                                   u.userId === currentUser?.id ||
-                                  !iCanManageSelectedCompetition
+                                  !isGlobalAdmin
                                 }
                               >
                                 <Trash2 className="h-4 w-4 text-destructive" />
@@ -652,8 +759,8 @@ export default function Admin() {
                               <AlertDialogHeader>
                                 <AlertDialogTitle>Ta bort användare?</AlertDialogTitle>
                                 <AlertDialogDescription>
-                                  Detta kommer att ta bort användaren "{u.displayName || u.email}" och all tillhörande
-                                  data. Denna åtgärd går inte att ångra.
+                                  Detta kommer att ta bort användaren "{u.displayName || u.email}" och all
+                                  tillhörande data. Denna åtgärd går inte att ångra.
                                 </AlertDialogDescription>
                               </AlertDialogHeader>
                               <AlertDialogFooter>
