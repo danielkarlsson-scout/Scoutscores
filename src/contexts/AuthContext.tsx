@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState, ReactNode } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import type { User, Session } from '@supabase/supabase-js';
 import type { ScoutSection } from '@/types/competition';
@@ -9,12 +9,26 @@ interface AuthContextType {
   user: User | null;
   session: Session | null;
   loading: boolean;
+
+  /** Global admin (superuser) – can only be granted in DB */
+  isGlobalAdmin: boolean;
+
+  /** Competition admin for the currently selected competition (scoped admin) */
+  isCompetitionAdmin: boolean;
+
+  /** Convenience: any admin (global OR competition-scoped) for the selected competition */
   isAdmin: boolean;
+
   isScorer: boolean;
   scorerSections: ScoutSection[];
+
+  /** Competition IDs where the user is competition admin */
+  adminCompetitionIds: string[];
+
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signUp: (email: string, password: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
+
   canScoreSection: (section: ScoutSection) => boolean;
   refreshRoles: () => Promise<void>;
 }
@@ -26,32 +40,59 @@ const queryTable = (tableName: string) => {
   return (supabase as any).from(tableName);
 };
 
+function getSelectedCompetitionId(): string | null {
+  try {
+    return window.localStorage.getItem('selectedCompetitionId');
+  } catch {
+    return null;
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
-  const [isAdmin, setIsAdmin] = useState(false);
+
+  const [isGlobalAdmin, setIsGlobalAdmin] = useState(false);
   const [isScorer, setIsScorer] = useState(false);
   const [scorerSections, setScorerSections] = useState<ScoutSection[]>([]);
+  const [adminCompetitionIds, setAdminCompetitionIds] = useState<string[]>([]);
 
   const fetchRoles = async (userId: string) => {
     try {
-      // Fetch user roles
-      const { data: roles } = await queryTable('user_roles')
+      // 1) Global roles (user_roles)
+      const { data: roles, error: rolesErr } = await queryTable('user_roles')
         .select('role')
         .eq('user_id', userId);
 
-      const hasAdmin = roles?.some((r: any) => r.role === 'admin') ?? false;
-      const hasScorer = roles?.some((r: any) => r.role === 'scorer') ?? false;
+      if (rolesErr) throw rolesErr;
 
-      setIsAdmin(hasAdmin);
-      setIsScorer(hasScorer);
+      const hasGlobalAdmin = roles?.some((r: any) => r.role === 'admin') ?? false;
+      const hasScorerRole = roles?.some((r: any) => r.role === 'scorer') ?? false;
 
-      // Fetch scorer permissions
-      if (hasScorer || hasAdmin) {
-        const { data: permissions } = await queryTable('scorer_permissions')
+      setIsGlobalAdmin(hasGlobalAdmin);
+      setIsScorer(hasScorerRole);
+
+      // 2) Competition admin memberships (competition_admins)
+      const { data: ca, error: caErr } = await queryTable('competition_admins')
+        .select('competition_id')
+        .eq('user_id', userId);
+
+      if (caErr) {
+        // If table doesn't exist yet (during migration), fail soft
+        console.warn('competition_admins query failed:', caErr);
+        setAdminCompetitionIds([]);
+      } else {
+        setAdminCompetitionIds((ca?.map((r: any) => String(r.competition_id))) ?? []);
+      }
+
+      // 3) Scorer permissions
+      if (hasScorerRole || hasGlobalAdmin) {
+        const { data: permissions, error: permErr } = await queryTable('scorer_permissions')
           .select('section')
           .eq('user_id', userId);
+
+        if (permErr) throw permErr;
 
         setScorerSections((permissions?.map((p: any) => p.section as ScoutSection)) ?? []);
       } else {
@@ -59,6 +100,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     } catch (error) {
       console.error('Error fetching roles:', error);
+      setIsGlobalAdmin(false);
+      setIsScorer(false);
+      setScorerSections([]);
+      setAdminCompetitionIds([]);
     }
   };
 
@@ -69,27 +114,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   useEffect(() => {
-    // Set up auth state listener BEFORE checking session
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        setSession(session);
-        setUser(session?.user ?? null);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      setSession(session);
+      setUser(session?.user ?? null);
 
-        if (session?.user) {
-          // Use setTimeout to avoid deadlock with Supabase client
-          setTimeout(() => fetchRoles(session.user.id), 0);
-        } else {
-          setIsAdmin(false);
-          setIsScorer(false);
-          setScorerSections([]);
-        }
-
-        setLoading(false);
+      if (session?.user) {
+        // Use setTimeout to avoid deadlock with Supabase client
+        setTimeout(() => fetchRoles(session.user.id), 0);
+      } else {
+        setIsGlobalAdmin(false);
+        setIsScorer(false);
+        setScorerSections([]);
+        setAdminCompetitionIds([]);
       }
-    );
 
-    // Check for existing session
-    supabase.auth.getSession().then(({ data: { session } }) => {
+      setLoading(false);
+    });
+
+    supabase.auth.getSession().then(({
+      data: { session },
+    }) => {
       setSession(session);
       setUser(session?.user ?? null);
 
@@ -131,10 +175,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = async () => {
     await supabase.auth.signOut();
-    setIsAdmin(false);
+    setIsGlobalAdmin(false);
     setIsScorer(false);
     setScorerSections([]);
+    setAdminCompetitionIds([]);
   };
+
+  const isCompetitionAdmin = useMemo(() => {
+    if (isGlobalAdmin) return true; // global admin is always effectively competition admin
+    const selectedId = getSelectedCompetitionId();
+    if (!selectedId) return false;
+    return adminCompetitionIds.includes(String(selectedId));
+  }, [isGlobalAdmin, adminCompetitionIds]);
+
+  const isAdmin = isGlobalAdmin || isCompetitionAdmin;
 
   const canScoreSection = (section: ScoutSection): boolean => {
     if (isAdmin) return true;
@@ -148,9 +202,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user,
         session,
         loading,
+        isGlobalAdmin,
+        isCompetitionAdmin,
         isAdmin,
         isScorer,
         scorerSections,
+        adminCompetitionIds,
         signIn,
         signUp,
         signOut,
