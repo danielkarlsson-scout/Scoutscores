@@ -41,6 +41,7 @@
     --upptackare: 150 60% 40%;
     --aventyrare: 35 70% 50%;
     --utmanare: 280 50% 45%;
+    --rover: 59,100%,44%;
 
     --sidebar-background: 150 20% 95%;
     --sidebar-foreground: 150 25% 20%;
@@ -116,6 +117,9 @@
   .section-utmanare {
     @apply bg-[hsl(var(--utmanare))];
   }
+  .section-rover {
+    @apply bg-[hsl(var(--rover))];
+  }
   
   .text-section-sparare {
     @apply text-[hsl(var(--sparare))];
@@ -128,5 +132,8 @@
   }
   .text-section-utmanare {
     @apply text-[hsl(var(--utmanare))];
+  }
+  .text-section-rover {
+    @apply text-[hsl(var(--rover))];
   }
 }
