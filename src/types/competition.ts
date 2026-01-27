@@ -5,6 +5,7 @@ export const SCOUT_SECTIONS: Record<ScoutSection, { name: string; ageRange: stri
   upptackare: { name: "Upptäckare", ageRange: "10-11 år" },
   aventyrare: { name: "Äventyrare", ageRange: "12-14 år" },
   utmanare: { name: "Utmanare", ageRange: "15-17 år" },
+  rover: : { name: "Rover", ageRange: "18-25 år" },
 };
 
 export type CompetitionStatus = "active" | "closed";
