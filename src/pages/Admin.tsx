@@ -25,20 +25,22 @@ import { SCOUT_SECTIONS, type ScoutSection } from '@/types/competition';
 import { SectionBadge } from '@/components/ui/section-badge';
 
 // Helper to query tables that may not be in types yet
-const queryTable = (tableName: string) => (supabase as any).from(tableName);
+const queryTable = (tableName: string) => {
+  return (supabase as any).from(tableName);
+};
 
 interface UserWithRoles {
   userId: string;
   email: string;
   displayName: string | null;
 
-  // ONLY from user_roles.role='admin' (set in DB)
+  // Global role from user_roles (ONLY set in DB)
   isGlobalAdmin: boolean;
 
-  // Per competition from competition_admins
+  // Per-competition admin from competition_admins
   competitionAdminOf: string[]; // competition_id[]
 
-  // Global scorer role
+  // Global scorer role (we keep as is)
   isScorer: boolean;
 
   // permissions per competition
@@ -70,72 +72,43 @@ export default function Admin() {
   const [saving, setSaving] = useState<string | null>(null);
   const [processingRequest, setProcessingRequest] = useState<string | null>(null);
 
+  // competition selector state (top-level hook)
   const [selectedCompetitionId, setSelectedCompetitionId] = useState<string>('');
 
+  // unified competitions list
   const allCompetitions = useMemo(
     () => [...(activeCompetitions ?? []), ...(archivedCompetitions ?? [])],
     [activeCompetitions, archivedCompetitions]
   );
 
+  // init selected competition when competitions change
   useEffect(() => {
     if (!selectedCompetitionId && allCompetitions.length > 0) {
       setSelectedCompetitionId(allCompetitions[0].id);
     }
   }, [allCompetitions, selectedCompetitionId]);
 
-  // For permission gating: if you're competition admin, you should only be able to manage within competitions you admin.
-  // We can verify that by checking the current user's admin rows from competition_admins.
-  const [myCompetitionAdminOf, setMyCompetitionAdminOf] = useState<string[]>([]);
-  useEffect(() => {
-    const run = async () => {
-      if (!currentUser?.id) {
-        setMyCompetitionAdminOf([]);
-        return;
-      }
-      // Global admins can manage all competitions, no need to fetch.
-      if (isGlobalAdmin) {
-        setMyCompetitionAdminOf(['*']);
-        return;
-      }
-
-      const { data, error } = await queryTable('competition_admins')
-        .select('competition_id')
-        .eq('user_id', currentUser.id);
-
-      if (error) {
-        console.error('Failed to load my competition admin list:', error);
-        setMyCompetitionAdminOf([]);
-        return;
-      }
-
-      setMyCompetitionAdminOf((data ?? []).map((r: any) => r.competition_id as string));
-    };
-
-    run();
-  }, [currentUser?.id, isGlobalAdmin]);
-
-  const iCanManageSelectedCompetition = useMemo(() => {
-    if (!selectedCompetitionId) return false;
-    if (isGlobalAdmin) return true;
-    return myCompetitionAdminOf.includes(selectedCompetitionId);
-  }, [selectedCompetitionId, isGlobalAdmin, myCompetitionAdminOf]);
-
+  // fetch users, roles and scorer permissions (including competition_id)
   const fetchUsers = async () => {
     try {
-      const { data: profiles, error: profilesError } = await queryTable('profiles')
-        .select('user_id, email, display_name');
+      // profiles
+      const { data: profiles, error: profilesError } = await queryTable('profiles').select('user_id, email, display_name');
       if (profilesError) throw profilesError;
 
-      const { data: roles, error: rolesError } = await queryTable('user_roles')
-        .select('user_id, role');
+      // roles (global)
+      const { data: roles, error: rolesError } = await queryTable('user_roles').select('user_id, role');
       if (rolesError) throw rolesError;
 
-      const { data: compAdmins, error: compAdminsError } = await queryTable('competition_admins')
-        .select('user_id, competition_id');
+      // competition admins (per competition)
+      const { data: compAdmins, error: compAdminsError } = await queryTable('competition_admins').select(
+        'user_id, competition_id'
+      );
       if (compAdminsError) throw compAdminsError;
 
-      const { data: permissions, error: permissionsError } = await queryTable('scorer_permissions')
-        .select('user_id, competition_id, section');
+      // scorer permissions (with competition_id)
+      const { data: permissions, error: permissionsError } = await queryTable('scorer_permissions').select(
+        'user_id, competition_id, section'
+      );
       if (permissionsError) throw permissionsError;
 
       const usersWithRoles: UserWithRoles[] = (profiles ?? []).map((profile: any) => {
@@ -147,9 +120,16 @@ export default function Admin() {
           userId: profile.user_id,
           email: profile.email,
           displayName: profile.display_name,
+
+          // Global admin is ONLY from user_roles.role = 'admin'
           isGlobalAdmin: userRoles.some((r: any) => r.role === 'admin'),
-          isScorer: userRoles.some((r: any) => r.role === 'scorer'),
+
+          // Per competition admin
           competitionAdminOf: userCompAdmins.map((a: any) => a.competition_id as string),
+
+          // scorer role can remain global
+          isScorer: userRoles.some((r: any) => r.role === 'scorer'),
+
           permissions: userPermissions.map((p: any) => ({
             competition_id: p.competition_id ?? null,
             section: p.section as ScoutSection,
@@ -170,6 +150,7 @@ export default function Admin() {
     }
   };
 
+  // fetch pending permission requests and enrich with profile + competition name
   const fetchRequests = async (profiles: any[]) => {
     try {
       const { data, error } = await queryTable('permission_requests')
@@ -203,26 +184,30 @@ export default function Admin() {
     setLoading(false);
   };
 
+  // fetch on mount / when admin toggles in
   useEffect(() => {
     if (isAdmin) {
       fetchAll();
     } else {
+      // clear data if not admin
       setUsers([]);
       setRequests([]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAdmin]);
 
+  // Approve request: add scorer role if needed, add scorer_permissions row (with competition_id), update request
   const handleApproveRequest = async (request: PermissionRequest) => {
     setProcessingRequest(request.id);
     try {
+      // Add scorer role if not already present (do NOT care about admin here; global admin is separate)
       const u = users.find((x) => x.userId === request.user_id);
       if (u && !u.isScorer && !u.isGlobalAdmin) {
-        const { error: rError } = await queryTable('user_roles')
-          .insert({ user_id: request.user_id, role: 'scorer' });
+        const { error: rError } = await queryTable('user_roles').insert({ user_id: request.user_id, role: 'scorer' });
         if (rError) throw rError;
       }
 
+      // Insert/upsert scorer_permissions for the specific competition + section
       const { error: pError } = await queryTable('scorer_permissions').upsert(
         {
           user_id: request.user_id,
@@ -233,6 +218,7 @@ export default function Admin() {
       );
       if (pError) throw pError;
 
+      // Update request status
       const { error: uError } = await queryTable('permission_requests')
         .update({
           status: 'approved',
@@ -249,7 +235,10 @@ export default function Admin() {
       await fetchAll();
     } catch (error) {
       console.error('Error approving request:', error);
-      toast({ title: 'Kunde inte godkänna ansökan', variant: 'destructive' });
+      toast({
+        title: 'Kunde inte godkänna ansökan',
+        variant: 'destructive',
+      });
     }
     setProcessingRequest(null);
   };
@@ -270,25 +259,22 @@ export default function Admin() {
       await fetchAll();
     } catch (error) {
       console.error('Error denying request:', error);
-      toast({ title: 'Kunde inte neka ansökan', variant: 'destructive' });
+      toast({
+        title: 'Kunde inte neka ansökan',
+        variant: 'destructive',
+      });
     }
     setProcessingRequest(null);
   };
 
-  // ✅ This is the ONLY "admin toggle" in UI: per-competition admin.
+  /**
+   * IMPORTANT:
+   * - "Global admin" (user_roles.role='admin') must NEVER be toggled from UI.
+   * - This checkbox is now "Tävlingsadmin" for the selected competition.
+   */
   const toggleCompetitionAdmin = async (user: UserWithRoles) => {
     if (!selectedCompetitionId) {
       toast({ title: 'Välj tävling först', variant: 'destructive' });
-      return;
-    }
-
-    // Competition admins should only be able to manage within competitions they admin.
-    if (!iCanManageSelectedCompetition) {
-      toast({
-        title: 'Åtkomst nekad',
-        description: 'Du kan bara hantera admins i tävlingar där du själv är tävlingsadmin.',
-        variant: 'destructive',
-      });
       return;
     }
 
@@ -303,8 +289,10 @@ export default function Admin() {
           .eq('competition_id', selectedCompetitionId);
         if (error) throw error;
       } else {
-        const { error } = await queryTable('competition_admins')
-          .insert({ user_id: user.userId, competition_id: selectedCompetitionId });
+        const { error } = await queryTable('competition_admins').insert({
+          user_id: user.userId,
+          competition_id: selectedCompetitionId,
+        });
         if (error) throw error;
       }
 
@@ -312,7 +300,10 @@ export default function Admin() {
       toast({ title: 'Tävlingsadmin uppdaterad' });
     } catch (error) {
       console.error('Error updating competition admin:', error);
-      toast({ title: 'Kunde inte uppdatera tävlingsadmin', variant: 'destructive' });
+      toast({
+        title: 'Kunde inte uppdatera tävlingsadmin',
+        variant: 'destructive',
+      });
     }
     setSaving(null);
   };
@@ -321,26 +312,23 @@ export default function Admin() {
     setSaving(user.userId);
     try {
       if (user.isScorer) {
-        const { error } = await queryTable('user_roles')
-          .delete()
-          .eq('user_id', user.userId)
-          .eq('role', 'scorer');
+        const { error } = await queryTable('user_roles').delete().eq('user_id', user.userId).eq('role', 'scorer');
         if (error) throw error;
 
-        const { error: e2 } = await queryTable('scorer_permissions')
-          .delete()
-          .eq('user_id', user.userId);
+        const { error: e2 } = await queryTable('scorer_permissions').delete().eq('user_id', user.userId);
         if (e2) throw e2;
       } else {
-        const { error } = await queryTable('user_roles')
-          .insert({ user_id: user.userId, role: 'scorer' });
+        const { error } = await queryTable('user_roles').insert({ user_id: user.userId, role: 'scorer' });
         if (error) throw error;
       }
       await fetchAll();
       toast({ title: 'Roll uppdaterad' });
     } catch (error) {
       console.error('Error updating role:', error);
-      toast({ title: 'Kunde inte uppdatera roll', variant: 'destructive' });
+      toast({
+        title: 'Kunde inte uppdatera roll',
+        variant: 'destructive',
+      });
     }
     setSaving(null);
   };
@@ -351,20 +339,9 @@ export default function Admin() {
       return;
     }
 
-    if (!iCanManageSelectedCompetition) {
-      toast({
-        title: 'Åtkomst nekad',
-        description: 'Du kan bara hantera behörigheter i tävlingar där du själv är tävlingsadmin.',
-        variant: 'destructive',
-      });
-      return;
-    }
-
     setSaving(user.userId);
     try {
-      const hasSection = user.permissions.some(
-        (p) => p.competition_id === selectedCompetitionId && p.section === section
-      );
+      const hasSection = user.permissions.some((p) => p.competition_id === selectedCompetitionId && p.section === section);
 
       if (hasSection) {
         const { error } = await queryTable('scorer_permissions')
@@ -374,16 +351,21 @@ export default function Admin() {
           .eq('section', section);
         if (error) throw error;
       } else {
-        const { error } = await queryTable('scorer_permissions')
-          .insert({ user_id: user.userId, competition_id: selectedCompetitionId, section });
+        const { error } = await queryTable('scorer_permissions').insert({
+          user_id: user.userId,
+          competition_id: selectedCompetitionId,
+          section,
+        });
         if (error) throw error;
       }
-
       await fetchAll();
       toast({ title: 'Behörighet uppdaterad' });
     } catch (error) {
       console.error('Error updating permission:', error);
-      toast({ title: 'Kunde inte uppdatera behörighet', variant: 'destructive' });
+      toast({
+        title: 'Kunde inte uppdatera behörighet',
+        variant: 'destructive',
+      });
     }
     setSaving(null);
   };
@@ -410,11 +392,15 @@ export default function Admin() {
       await fetchAll();
     } catch (error) {
       console.error('Error deleting user:', error);
-      toast({ title: 'Kunde inte ta bort användare', variant: 'destructive' });
+      toast({
+        title: 'Kunde inte ta bort användare',
+        variant: 'destructive',
+      });
     }
     setSaving(null);
   };
 
+  // Section colors matching SectionBadge
   const sectionColors: Record<ScoutSection, string> = {
     sparare: 'bg-[hsl(200,70%,50%)] text-white hover:bg-[hsl(200,70%,45%)]',
     upptackare: 'bg-[hsl(150,60%,40%)] text-white hover:bg-[hsl(150,60%,35%)]',
@@ -423,10 +409,14 @@ export default function Admin() {
   };
 
   const sectionOutlineColors: Record<ScoutSection, string> = {
-    sparare: 'border-[hsl(200,70%,50%)] text-[hsl(200,70%,40%)] hover:bg-[hsl(200,70%,50%)] hover:text-white',
-    upptackare: 'border-[hsl(150,60%,40%)] text-[hsl(150,60%,35%)] hover:bg-[hsl(150,60%,40%)] hover:text-white',
-    aventyrare: 'border-[hsl(35,70%,50%)] text-[hsl(35,70%,45%)] hover:bg-[hsl(35,70%,50%)] hover:text-white',
-    utmanare: 'border-[hsl(280,50%,45%)] text-[hsl(280,50%,40%)] hover:bg-[hsl(280,50%,45%)] hover:text-white',
+    sparare:
+      'border-[hsl(200,70%,50%)] text-[hsl(200,70%,40%)] hover:bg-[hsl(200,70%,50%)] hover:text-white',
+    upptackare:
+      'border-[hsl(150,60%,40%)] text-[hsl(150,60%,35%)] hover:bg-[hsl(150,60%,40%)] hover:text-white',
+    aventyrare:
+      'border-[hsl(35,70%,50%)] text-[hsl(35,70%,45%)] hover:bg-[hsl(35,70%,50%)] hover:text-white',
+    utmanare:
+      'border-[hsl(280,50%,45%)] text-[hsl(280,50%,40%)] hover:bg-[hsl(280,50%,45%)] hover:text-white',
   };
 
   if (!isAdmin) {
@@ -454,6 +444,7 @@ export default function Admin() {
         <p className="text-muted-foreground">Hantera användare och behörigheter</p>
       </div>
 
+      {/* Pending Permission Requests */}
       {requests.length > 0 && (
         <Card className="border-primary/50">
           <CardHeader>
@@ -518,7 +509,8 @@ export default function Admin() {
             Användare
           </CardTitle>
           <CardDescription>
-            “Admin” här betyder <strong>Tävlingsadmin för vald tävling</strong>. Global admin kan bara sättas i databasen.
+            Tilldela roller och behörigheter till användare. Scorers kan bara registrera poäng för sina tilldelade
+            avdelningar.
           </CardDescription>
         </CardHeader>
 
@@ -545,11 +537,10 @@ export default function Admin() {
                   ))}
                 </select>
 
-                {!iCanManageSelectedCompetition && (
-                  <Badge variant="destructive" className="ml-auto">
-                    Du saknar admin i denna tävling
-                  </Badge>
-                )}
+                <div className="ml-auto flex items-center gap-2">
+                  <Badge variant="outline">Admin = Tävlingsadmin (vald tävling)</Badge>
+                  {isGlobalAdmin && <Badge>Du är Global admin</Badge>}
+                </div>
               </div>
 
               <Table>
@@ -565,49 +556,50 @@ export default function Admin() {
                 </TableHeader>
 
                 <TableBody>
-                  {users.map((u) => {
+                  {users.map((user) => {
                     const isCompAdminSelected = selectedCompetitionId
-                      ? u.competitionAdminOf.includes(selectedCompetitionId)
+                      ? user.competitionAdminOf.includes(selectedCompetitionId)
                       : false;
 
                     return (
-                      <TableRow key={u.userId}>
+                      <TableRow key={user.userId}>
                         <TableCell>
                           <div>
-                            <p className="font-medium">{u.displayName || u.email}</p>
-                            {u.displayName && <p className="text-sm text-muted-foreground">{u.email}</p>}
+                            <p className="font-medium">{user.displayName || user.email}</p>
+                            {user.displayName && <p className="text-sm text-muted-foreground">{user.email}</p>}
                           </div>
                         </TableCell>
 
-                        {/* Read-only global admin */}
+                        {/* Global admin - read only */}
                         <TableCell>
-                          <Checkbox checked={u.isGlobalAdmin} disabled />
+                          <Checkbox checked={user.isGlobalAdmin} disabled />
                         </TableCell>
 
-                        {/* ✅ This is the admin toggle (competition admin) */}
+                        {/* Competition admin for selected competition */}
                         <TableCell>
                           <Checkbox
                             checked={isCompAdminSelected}
-                            onCheckedChange={() => toggleCompetitionAdmin(u)}
-                            disabled={saving === u.userId || !selectedCompetitionId || !iCanManageSelectedCompetition}
+                            onCheckedChange={() => toggleCompetitionAdmin(user)}
+                            disabled={saving === user.userId || !selectedCompetitionId}
                           />
                         </TableCell>
 
                         <TableCell>
                           <Checkbox
-                            checked={u.isScorer}
-                            onCheckedChange={() => toggleScorerRole(u)}
-                            disabled={saving === u.userId || u.isGlobalAdmin || !iCanManageSelectedCompetition}
+                            checked={user.isScorer}
+                            onCheckedChange={() => toggleScorerRole(user)}
+                            disabled={saving === user.userId || user.isGlobalAdmin}
                           />
                         </TableCell>
 
                         <TableCell>
-                          {u.isGlobalAdmin || isCompAdminSelected ? (
+                          {/* If global admin OR competition admin -> treat as "Alla avdelningar" in this competition */}
+                          {user.isGlobalAdmin || isCompAdminSelected ? (
                             <Badge variant="secondary">Alla avdelningar</Badge>
-                          ) : u.isScorer ? (
+                          ) : user.isScorer ? (
                             <div className="flex flex-wrap gap-2">
                               {(Object.keys(SCOUT_SECTIONS) as ScoutSection[]).map((section) => {
-                                const enabled = u.permissions.some(
+                                const enabled = user.permissions.some(
                                   (p) => p.competition_id === selectedCompetitionId && p.section === section
                                 );
 
@@ -617,13 +609,12 @@ export default function Admin() {
                                     variant="outline"
                                     className={cn(
                                       'cursor-pointer border transition-colors',
-                                      enabled ? sectionColors[section] : sectionOutlineColors[section],
-                                      !iCanManageSelectedCompetition && 'pointer-events-none opacity-50'
+                                      enabled ? sectionColors[section] : sectionOutlineColors[section]
                                     )}
-                                    onClick={() => toggleSectionPermission(u, section)}
+                                    onClick={() => toggleSectionPermission(user, section)}
                                   >
                                     {SCOUT_SECTIONS[section].name}
-                                    {saving === u.userId && <Loader2 className="ml-1 h-3 w-3 animate-spin" />}
+                                    {saving === user.userId && <Loader2 className="ml-1 h-3 w-3 animate-spin" />}
                                   </Badge>
                                 );
                               })}
@@ -639,11 +630,7 @@ export default function Admin() {
                               <Button
                                 variant="ghost"
                                 size="icon"
-                                disabled={
-                                  saving === u.userId ||
-                                  u.userId === currentUser?.id ||
-                                  !iCanManageSelectedCompetition
-                                }
+                                disabled={saving === user.userId || user.userId === currentUser?.id}
                               >
                                 <Trash2 className="h-4 w-4 text-destructive" />
                               </Button>
@@ -652,14 +639,14 @@ export default function Admin() {
                               <AlertDialogHeader>
                                 <AlertDialogTitle>Ta bort användare?</AlertDialogTitle>
                                 <AlertDialogDescription>
-                                  Detta kommer att ta bort användaren "{u.displayName || u.email}" och all tillhörande
-                                  data. Denna åtgärd går inte att ångra.
+                                  Detta kommer att ta bort användaren "{user.displayName || user.email}" och all
+                                  tillhörande data. Denna åtgärd går inte att ångra.
                                 </AlertDialogDescription>
                               </AlertDialogHeader>
                               <AlertDialogFooter>
                                 <AlertDialogCancel>Avbryt</AlertDialogCancel>
                                 <AlertDialogAction
-                                  onClick={() => deleteUser(u)}
+                                  onClick={() => deleteUser(user)}
                                   className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                                 >
                                   Ta bort
