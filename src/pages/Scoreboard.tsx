@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useCompetition } from "@/contexts/CompetitionContext";
 import { useAuth } from "@/contexts/AuthContext";
@@ -20,6 +20,28 @@ export default function Scoreboard() {
 
   const patrolsWithScores = getPatrolsWithScores(selectedSection === "all" ? undefined : selectedSection);
 
+  // Ny: rankning med tie-break på antal fullpoäng (dvs antal stationer där patrullen har station.maxScore)
+  const rankedPatrols = useMemo(() => {
+    // Kopiera så vi inte muterar ursprungligt array
+    const list = [...patrolsWithScores];
+
+    list.sort((a, b) => {
+      // 1) totalScore desc
+      if (b.totalScore !== a.totalScore) return b.totalScore - a.totalScore;
+
+      // 2) count of full-score (stationScores[station.id] === station.maxScore) desc
+      const aFull = stations.reduce((acc, st) => acc + (a.stationScores[st.id] === st.maxScore ? 1 : 0), 0);
+      const bFull = stations.reduce((acc, st) => acc + (b.stationScores[st.id] === st.maxScore ? 1 : 0), 0);
+      if (bFull !== aFull) return bFull - aFull;
+
+      // 3) fallback: namn a-ö (svensk lokal)
+      return a.name.localeCompare(b.name, "sv", { sensitivity: "base" });
+    });
+
+    // Tilldela rank (1..n). Om du vill hantera delade ranker på annat sätt, går det att justera här.
+    return list.map((p, idx) => ({ ...p, rank: idx + 1 }));
+  }, [patrolsWithScores, stations]);
+
   const handleShare = async () => {
     const url = window.location.href;
     if (navigator.share) {
@@ -37,11 +59,11 @@ export default function Scoreboard() {
     }
   };
 
-  const getMedalIcon = (rank: number) => {
+  const getMedalIcon = (rank: number | undefined) => {
     if (rank === 1) return <Medal className="h-5 w-5 text-yellow-500" />;
     if (rank === 2) return <Medal className="h-5 w-5 text-gray-400" />;
     if (rank === 3) return <Medal className="h-5 w-5 text-amber-600" />;
-    return <span className="w-5 text-center font-bold text-muted-foreground">{rank}</span>;
+    return <span className="w-5 text-center font-bold text-muted-foreground">{rank ?? "-"}</span>;
   };
 
   // Wrap content in a public-friendly layout
@@ -69,7 +91,7 @@ export default function Scoreboard() {
         </TabsList>
       </Tabs>
 
-      {patrolsWithScores.length > 0 ? (
+      {rankedPatrols.length > 0 ? (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -95,10 +117,10 @@ export default function Scoreboard() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {patrolsWithScores.map((patrol, index) => (
-                  <TableRow key={patrol.id} className={cn(index < 3 && "bg-secondary/10")}>
+                {rankedPatrols.map((patrol) => (
+                  <TableRow key={patrol.id} className={cn((patrol.rank ?? 999) <= 3 && "bg-secondary/10")}>
                     <TableCell>
-                      <div className="flex items-center justify-center">{getMedalIcon(patrol.rank!)}</div>
+                      <div className="flex items-center justify-center">{getMedalIcon(patrol.rank)}</div>
                     </TableCell>
                     <TableCell className="font-medium">{patrol.name}</TableCell>
                     <TableCell className="hidden sm:table-cell">
@@ -108,7 +130,7 @@ export default function Scoreboard() {
                       {patrol.scoutGroupId ? (
                         <span className="flex items-center gap-1 text-muted-foreground text-sm">
                           <Building2 className="h-3 w-3" />
-                          {getScoutGroupName(patrol.scoutGroupId) || '-'}
+                          {getScoutGroupName(patrol.scoutGroupId) || "-"}
                         </span>
                       ) : (
                         <span className="text-muted-foreground">-</span>
@@ -143,15 +165,15 @@ export default function Scoreboard() {
       )}
 
       {/* Quick stats */}
-      {patrolsWithScores.length > 0 && (
+      {rankedPatrols.length > 0 && (
         <div className="grid gap-4 sm:grid-cols-3">
           <Card>
             <CardContent className="pt-6">
               <div className="text-center">
                 <Medal className="h-8 w-8 text-yellow-500 mx-auto mb-2" />
                 <p className="text-sm text-muted-foreground">Ledare</p>
-                <p className="font-bold text-lg">{patrolsWithScores[0]?.name}</p>
-                <p className="text-2xl font-bold text-primary">{patrolsWithScores[0]?.totalScore}p</p>
+                <p className="font-bold text-lg">{rankedPatrols[0]?.name}</p>
+                <p className="text-2xl font-bold text-primary">{rankedPatrols[0]?.totalScore}p</p>
               </div>
             </CardContent>
           </Card>
@@ -160,7 +182,7 @@ export default function Scoreboard() {
               <div className="text-center">
                 <p className="text-sm text-muted-foreground mb-2">Genomsnitt</p>
                 <p className="text-3xl font-bold">
-                  {Math.round(patrolsWithScores.reduce((sum, p) => sum + p.totalScore, 0) / patrolsWithScores.length)}p
+                  {Math.round(rankedPatrols.reduce((sum, p) => sum + p.totalScore, 0) / rankedPatrols.length)}p
                 </p>
               </div>
             </CardContent>
