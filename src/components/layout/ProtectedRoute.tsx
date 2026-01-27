@@ -16,7 +16,8 @@ export function ProtectedRoute({
   requireScorer = false,
   allowNoRoles = false 
 }: ProtectedRouteProps) {
-  const { user, loading, isAdmin, isScorer } = useAuth();
+  const { user, loading, isGlobalAdmin, isCompetitionAdmin, isScorer } = useAuth();
+  const isAdmin = isGlobalAdmin || isCompetitionAdmin;
 
   if (loading) {
     return (
