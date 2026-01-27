@@ -2,7 +2,7 @@
 CREATE TYPE public.app_role AS ENUM ('admin', 'scorer');
 
 -- Create enum for scout sections (matching frontend types)
-CREATE TYPE public.scout_section AS ENUM ('sparare', 'upptackare', 'aventyrare', 'utmanare');
+CREATE TYPE public.scout_section AS ENUM ('sparare', 'upptackare', 'aventyrare', 'utmanare', 'rover');
 
 -- Create user_roles table for role management
 CREATE TABLE public.user_roles (
