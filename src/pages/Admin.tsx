@@ -384,7 +384,7 @@ export default function Admin() {
     upptackare: 'border-[hsl(150,60%,40%)] text-[hsl(150,60%,35%)] hover:bg-[hsl(150,60%,40%)] hover:text-white',
     aventyrare: 'border-[hsl(35,70%,50%)] text-[hsl(35,70%,45%)] hover:bg-[hsl(35,70%,50%)] hover:text-white',
     utmanare: 'border-[hsl(280,50%,45%)] text-[hsl(280,50%,40%)] hover:bg-[hsl(280,50%,45%)] hover:text-white',
-    rover: 'bg-[hsl(59,100%,44%)] text-white hover:bg-[hsl(59,100%,44%)]',
+    rover: 'border-[hsl(59,100%,44%)] text-[hsl(59,100%,39%)] hover:bg-[hsl(59,190%,44%)] hover:text-white',
   };
 
   if (!isAdmin) {
