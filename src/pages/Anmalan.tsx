@@ -18,7 +18,7 @@ type ScoutGroup = {
   competition_id: string;
 };
 
-type Section = "sparare" | "upptackare" | "aventyrare" | "utmanare";
+type Section = "sparare" | "upptackare" | "aventyrare" | "utmanare" | "rover";
 
 export default function Anmalan() {
   const [loading, setLoading] = useState(true);
