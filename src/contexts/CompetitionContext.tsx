@@ -22,11 +22,11 @@ interface CompetitionContextType {
 
   /**
    * Scorer support:
-   * - `scorerActiveCompetitions` are the active competitions a scorer may score in
-   * - `scorerCompetitionIds` are the competition ids the scorer has permission for
+   * - `selectableCompetitions` are the competitions a scorer may actively score in (active only)
+   * - `allowedCompetitionIds` are the competition ids the scorer has permission for
    */
-  scorerActiveCompetitions: Competition[];
-  scorerCompetitionIds: string[];
+  selectableCompetitions: Competition[];
+  allowedCompetitionIds: string[];
   canSelectCompetition: (competitionId: string) => boolean;
 
   competition: Competition | null;
@@ -154,47 +154,13 @@ function mapDbTemplate(row: any): ScoutGroupTemplate {
 }
 
 export function CompetitionProvider({ children }: { children: React.ReactNode }) {
-  const { user, isAdmin } = useAuth();
-  const storageKey = useMemo(() => {
-  const uid = user?.id ?? "anon";
-  return `${SELECTED_KEY}:${isAdmin ? "admin" : "scorer"}:${uid}`;
-}, [user?.id, isAdmin]);
+  const { user, isGlobalAdmin, isCompetitionAdmin, isAdmin, adminCompetitionIds } = useAuth();
+
   const [competitions, setCompetitions] = useState<Competition[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(() => localStorage.getItem(SELECTED_KEY));
 
-  // ✅ Starta null och hydrera efter mount (undviker race/SSR)
-const [selectedId, setSelectedId] = useState<string | null>(null);
-const [hasHydratedSelection, setHasHydratedSelection] = useState(false);
-
-// Hydrera selection från per-user key — fallback / migrera från legacy key vid behov
-useEffect(() => {
-  try {
-    // 1) Försök läsa per-user key först
-    const perUser = localStorage.getItem(storageKey);
-
-    if (perUser) {
-      setSelectedId(perUser);
-    } else {
-      // 2) Fallback: läs legacy global key och migrera den till per-user key
-      const legacy = localStorage.getItem(SELECTED_KEY);
-      if (legacy) {
-        setSelectedId(legacy);
-        try {
-          localStorage.setItem(storageKey, legacy);
-        } catch {
-          // ignore write error
-        }
-      } else {
-        setSelectedId(null);
-      }
-    }
-  } catch {
-    setSelectedId(null);
-  } finally {
-    setHasHydratedSelection(true);
-  }
-}, [storageKey]);
-  
   const [scorerCompetitionIds, setScorerCompetitionIds] = useState<string[]>([]);
+
   const [scoutGroupTemplates, setScoutGroupTemplates] = useState<ScoutGroupTemplate[]>([]);
 
   // For optimistic scoring + status
@@ -227,37 +193,34 @@ useEffect(() => {
   const scores = competition?.scores ?? [];
   const scoutGroups = competition?.scoutGroups ?? [];
 
-// Persist selection — skriv både per-user key *och* legacy key så gamla komponenter förblir kompatibla.
-useEffect(() => {
-  if (!hasHydratedSelection) return;
+  // persist selection
+  useEffect(() => {
+    if (selectedId) localStorage.setItem(SELECTED_KEY, selectedId);
+    else localStorage.removeItem(SELECTED_KEY);
+  }, [selectedId]);
 
-  try {
-    if (selectedId) {
-      localStorage.setItem(storageKey, selectedId);
-      // håll även legacy nyckel uppdaterad (för dropdown + gamla komponenter)
-      try {
-        localStorage.setItem(SELECTED_KEY, selectedId);
-      } catch {
-        // ignore secondary write error
-      }
-    } else {
-      localStorage.removeItem(storageKey);
-      try {
-        localStorage.removeItem(SELECTED_KEY);
-      } catch {
-        // ignore
-      }
+  // Auto-select / validate selection
+  useEffect(() => {
+    // Admin: previous behavior (first active)
+    if (isAdmin) {
+      if (!selectedId && activeCompetitions.length > 0) setSelectedId(activeCompetitions[0].id);
+      return;
     }
-  } catch {
-    // ignore primary write error
-  }
-}, [selectedId, hasHydratedSelection, storageKey]);
+
+    // Scorer: only allow selecting active competitions they have permission for
+    if (scorerActiveCompetitions.length === 0) {
+      setSelectedId(null);
+      return;
+    }
+
+    if (!selectedId || !scorerActiveCompetitions.some((c) => c.id === selectedId)) {
+      setSelectedId(scorerActiveCompetitions[0].id);
+    }
+  }, [isAdmin, selectedId, activeCompetitions, scorerActiveCompetitions]);
 
   const refreshAll = useCallback(async () => {
-  // ✅ Vänta tills localStorage-hydrering är klar
-  if (!hasHydratedSelection) return;
-
-  const { data: comps, error: compsErr } = await supabase
+    // 1) competitions
+    const { data: comps, error: compsErr } = await supabase
       .from("competitions")
       .select("id,name,date,is_active,created_at,closed_at")
       .order("created_at", { ascending: false });
@@ -270,13 +233,7 @@ useEffect(() => {
 
     const mapped = (comps ?? []).map(mapDbCompetition);
 
-    // ✅ VIKTIGT (behåll från din nuvarande): scorer ska inte tappa selected innan auth laddat
-    if (!isAdmin && !user?.id) {
-      setCompetitions(mapped);
-      return;
-    }
-
-    // scorer permissions
+    // 1.1) scorer permissions (so we can both: a) drive UI selection, b) avoid fetching data we don't have RLS for)
     let permIds: string[] = [];
     if (!isAdmin && user?.id) {
       const { data: perms, error: permsErr } = await supabase
@@ -291,32 +248,22 @@ useEffect(() => {
         permIds = (perms ?? []).map((p: any) => p.competition_id);
       }
     }
-
     setScorerCompetitionIds(permIds);
 
+    // Determine which competitions we are allowed to fetch related data for
+    // - Admin: all competitions
+    // - Scorer: only ACTIVE competitions they have permission for
     const allIds = mapped.map((c) => c.id);
     const allowed = new Set(permIds);
     const idsToFetch = isAdmin ? allIds : mapped.filter((c) => c.status === "active" && allowed.has(c.id)).map((c) => c.id);
 
-    const chooseSelectedId = (prevSelectedId: string | null): string | null => {
-  // 1) Om vi redan har ett val och det finns kvar i listan: behåll det.
-  if (prevSelectedId && mapped.some((c) => c.id === prevSelectedId)) return prevSelectedId;
-
-  // 2) Admin: gör INGEN auto-select här (det är det som orsakar "hoppar tillbaka")
-  //    Admin väljer via Tävlingar-sidan, så låt det vara null tills användaren väljer.
-  if (isAdmin) return null;
-
-  // 3) Scorer: välj första tävling som scorer får välja
-  const selectable = mapped.filter((c) => c.status === "active" && allowed.has(c.id));
-  return selectable[0]?.id ?? null;
-};
-
     if (idsToFetch.length === 0) {
+      // No accessible competitions -> keep competitions list (without related data)
       setCompetitions(mapped);
-      setSelectedId((prev) => chooseSelectedId(prev));
       return;
     }
 
+    // 2) fetch related tables in parallel
     const [stationsRes, patrolsRes, scoresRes, groupsRes] = await Promise.all([
       supabase
         .from("stations")
@@ -382,8 +329,7 @@ useEffect(() => {
     }));
 
     setCompetitions(merged);
-    setSelectedId((prev) => chooseSelectedId(prev));
-  }, [isAdmin, user?.id, hasHydratedSelection, storageKey]);
+  }, [isAdmin, user?.id]);
 
   const refreshTemplates = useCallback(async () => {
     const { data, error } = await supabase
@@ -434,11 +380,13 @@ useEffect(() => {
 
   const selectCompetition = useCallback(
     (id: string) => {
+      // Admin can select any competition.
       if (isAdmin) {
         setSelectedId(id);
         return;
       }
 
+      // Scorer: only allow selecting competitions they have access to and that are open.
       const isAllowed = scorerCompetitionIds.includes(id);
       const isActive = competitions.some((c) => c.id === id && c.status === "active");
       if (isAllowed && isActive) setSelectedId(id);
@@ -827,7 +775,7 @@ useEffect(() => {
   );
 
   // -------------------------
-  // scoring
+  // scoring (DB write) — matchar övriga CRUD: optimistiskt lokalt + skriv DB (ingen select)
   // -------------------------
   const getScore = useCallback(
     (patrolId: string, stationId: string) => {
@@ -854,6 +802,7 @@ useEffect(() => {
 
       const key = scoreKey(patrolId, stationId);
 
+      // 1) Optimistisk uppdatering i "competitions"-state (precis som committen gör)
       setCompetitions((prev) =>
         prev.map((c) => {
           if (c.id !== selectedId) return c;
@@ -881,8 +830,10 @@ useEffect(() => {
         })
       );
 
+      // 2) UI: saving
       setScoreSaveState((prev) => new Map(prev).set(key, "saving"));
 
+      // 3) Skriv till DB – viktigt: INGEN .select() / .single()
       const { error } = await supabase.from("scores").upsert(
         {
           competition_id: selectedId,
@@ -901,6 +852,7 @@ useEffect(() => {
         return;
       }
 
+      // 4) Success: saved + städa
       setScoreSaveState((prev) => new Map(prev).set(key, "saved"));
       setPendingRetry((prev) => {
         const next = new Map(prev);
@@ -913,6 +865,7 @@ useEffect(() => {
         return next;
       });
 
+      // 5) tillbaka till idle efter en stund
       window.setTimeout(() => {
         setScoreSaveState((prev) => {
           const next = new Map(prev);
@@ -927,7 +880,10 @@ useEffect(() => {
   const setScore = useCallback(
     async (patrolId: string, stationId: string, score: number) => {
       const key = scoreKey(patrolId, stationId);
+
+      // optimistic override (för UI direkt)
       setScoreOverrides((prev) => new Map(prev).set(key, score));
+
       await persistScore(patrolId, stationId, score);
     },
     [persistScore]
@@ -939,6 +895,7 @@ useEffect(() => {
       const pending = pendingRetry.get(key);
       if (!pending) return;
 
+      // håll UI i synk
       setScoreOverrides((prev) => new Map(prev).set(key, pending.score));
       setScoreSaveState((prev) => new Map(prev).set(key, "saving"));
 
