@@ -22,8 +22,8 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
-// ✅ Fast ordning för avdelningar: Spårare, Upptäckare, Äventyrare, Utmanare
-const SECTION_SORT_ORDER: ScoutSection[] = ["sparare", "upptackare", "aventyrare", "utmanare"] as ScoutSection[];
+// ✅ Fast ordning för avdelningar: Spårare, Upptäckare, Äventyrare, Utmanare, Rover
+const SECTION_SORT_ORDER: ScoutSection[] = ["sparare", "upptackare", "aventyrare", "utmanare", "rover"] as ScoutSection[];
 
 const sectionRank = (s: ScoutSection) => {
   const idx = SECTION_SORT_ORDER.indexOf(s);
