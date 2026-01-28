@@ -6,12 +6,12 @@ import {
   useState,
   ReactNode,
   useCallback,
-} from 'react';
-import { supabase } from '@/integrations/supabase/client';
-import type { User, Session } from '@supabase/supabase-js';
-import type { ScoutSection } from '@/types/competition';
+} from "react";
+import { supabase } from "@/integrations/supabase/client";
+import type { User, Session } from "@supabase/supabase-js";
+import type { ScoutSection } from "@/types/competition";
 
-export type AppRole = 'admin' | 'scorer';
+export type AppRole = "admin" | "scorer";
 
 type ScorerPermission = {
   competition_id: string;
@@ -72,14 +72,29 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 // Helper to query tables that may not be in types yet
-const queryTable = (tableName: string) => {
-  return (supabase as any).from(tableName);
-};
+const queryTable = (tableName: string) => (supabase as any).from(tableName);
 
-function safeGetSelectedCompetitionId(): string | null {
+/**
+ * CompetitionContext uses this key.
+ * IMPORTANT: must match CompetitionContext.tsx SELECTED_KEY
+ */
+const SELECTED_KEY_PRIMARY = "scout-selected-competition";
+
+/**
+ * Legacy/other key some older code used.
+ * We'll read it for compatibility, but primary is the one above.
+ */
+const SELECTED_KEY_LEGACY = "selectedCompetitionId";
+
+function safeReadSelectedCompetitionId(): string | null {
   try {
-    const v = window.localStorage.getItem('selectedCompetitionId');
-    return v && v.trim() ? v : null;
+    const primary = window.localStorage.getItem(SELECTED_KEY_PRIMARY);
+    if (primary && primary.trim()) return primary.trim();
+
+    const legacy = window.localStorage.getItem(SELECTED_KEY_LEGACY);
+    if (legacy && legacy.trim()) return legacy.trim();
+
+    return null;
   } catch {
     return null;
   }
@@ -96,64 +111,68 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [adminCompetitionIds, setAdminCompetitionIds] = useState<string[]>([]);
   const [scorerPermissions, setScorerPermissions] = useState<ScorerPermission[]>([]);
 
-  // keep selectedCompetitionId in state so UI reacts immediately
   const [selectedCompetitionId, setSelectedCompetitionId] = useState<string | null>(() =>
-    safeGetSelectedCompetitionId()
+    safeReadSelectedCompetitionId()
   );
 
-  // Listen for localStorage changes (e.g. competition switch in another tab or via code)
+  // Listen for localStorage changes (other tabs)
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
-      if (e.key === 'selectedCompetitionId') {
-        setSelectedCompetitionId(e.newValue && e.newValue.trim() ? e.newValue : null);
+      if (e.key === SELECTED_KEY_PRIMARY || e.key === SELECTED_KEY_LEGACY) {
+        const next = safeReadSelectedCompetitionId();
+        setSelectedCompetitionId(next);
       }
     };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
   }, []);
 
-  // Also refresh selectedCompetitionId periodically when this tab changes it (storage event doesn't fire in same tab)
+  /**
+   * Same-tab changes won't trigger the storage event.
+   * Instead of 500ms polling, do a lightweight sync every 2s.
+   * (Cheap, avoids races, and keeps UI correct.)
+   */
   useEffect(() => {
     const id = window.setInterval(() => {
-      const v = safeGetSelectedCompetitionId();
-      setSelectedCompetitionId((prev) => (prev !== v ? v : prev));
-    }, 500);
+      const next = safeReadSelectedCompetitionId();
+      setSelectedCompetitionId((prev) => (prev !== next ? next : prev));
+    }, 2000);
     return () => window.clearInterval(id);
   }, []);
 
   const fetchRoles = useCallback(async (userId: string) => {
     try {
       // 1) Global roles (user_roles)
-      const { data: roles, error: rolesErr } = await queryTable('user_roles')
-        .select('role')
-        .eq('user_id', userId);
+      const { data: roles, error: rolesErr } = await queryTable("user_roles")
+        .select("role")
+        .eq("user_id", userId);
 
       if (rolesErr) throw rolesErr;
 
-      const globalAdmin = (roles ?? []).some((r: any) => r.role === 'admin');
-      const scorerRole = (roles ?? []).some((r: any) => r.role === 'scorer');
+      const globalAdmin = (roles ?? []).some((r: any) => r.role === "admin");
+      const scorerRole = (roles ?? []).some((r: any) => r.role === "scorer");
 
       setIsGlobalAdmin(globalAdmin);
       setHasScorerRole(scorerRole);
 
       // 2) Competition admin memberships (competition_admins)
-      const { data: ca, error: caErr } = await queryTable('competition_admins')
-        .select('competition_id')
-        .eq('user_id', userId);
+      const { data: ca, error: caErr } = await queryTable("competition_admins")
+        .select("competition_id")
+        .eq("user_id", userId);
 
       if (caErr) {
-        console.warn('competition_admins query failed:', caErr);
+        console.warn("competition_admins query failed:", caErr);
         setAdminCompetitionIds([]);
       } else {
         setAdminCompetitionIds((ca ?? []).map((r: any) => String(r.competition_id)));
       }
 
       // 3) Scorer permissions (competition_id + section)
-      // NOTE: we fetch for scorerRole OR admin (admins can act as scorer)
+      // Fetch for scorerRole OR globalAdmin (global admins can act as scorer)
       if (scorerRole || globalAdmin) {
-        const { data: perms, error: permErr } = await queryTable('scorer_permissions')
-          .select('competition_id, section')
-          .eq('user_id', userId);
+        const { data: perms, error: permErr } = await queryTable("scorer_permissions")
+          .select("competition_id, section")
+          .eq("user_id", userId);
 
         if (permErr) throw permErr;
 
@@ -169,7 +188,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setScorerPermissions([]);
       }
     } catch (error) {
-      console.error('Error fetching roles:', error);
+      console.error("Error fetching roles:", error);
       setIsGlobalAdmin(false);
       setHasScorerRole(false);
       setAdminCompetitionIds([]);
@@ -182,7 +201,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user, fetchRoles]);
 
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
       setSession(nextSession);
       setUser(nextSession?.user ?? null);
 
@@ -218,12 +239,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return { error };
   };
 
-  // ✅ Redirect för verifieringsmail
+  // ✅ Redirect for verification email
   const signUp = async (email: string, password: string) => {
-    const redirectTo =
-      import.meta.env.PROD
-        ? 'https://scoutscores.vercel.app/verify-email'
-        : 'http://localhost:5173/verify-email';
+    const redirectTo = import.meta.env.PROD
+      ? "https://scoutscores.vercel.app/verify-email"
+      : "http://localhost:5173/verify-email";
 
     const { error } = await supabase.auth.signUp({
       email,
@@ -257,7 +277,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const isAdmin = isGlobalAdmin || isCompetitionAdmin;
 
-  // expose "isScorer" but remember: scoring is validated via canScoreSection
+  // expose "isScorer" but scoring is validated via canScoreSectionFor
   const isScorer = hasScorerRole || isAdmin;
 
   // Back-compat list (unique sections across competitions)
@@ -269,10 +289,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const canScoreSectionFor = useCallback(
     (competitionId: string | null | undefined, section: ScoutSection): boolean => {
-      // Admin always can
+      // Admin for the competition always can
       if (isCompetitionAdminFor(competitionId)) return true;
 
-      // Must at least have scorer role
+      // Must have scorer role
       if (!hasScorerRole) return false;
 
       // Must have explicit permission for that competition+section
@@ -319,7 +339,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 }
 
 export function useAuth() {
-  const context = useContext(AuthContext);
-  if (!context) throw new Error('useAuth must be used within an AuthProvider');
-  return context;
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error("useAuth must be used within an AuthProvider");
+  return ctx;
 }
