@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from "react";
+import { Navigate, Link } from "react-router-dom";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Clock, LogOut, Trophy, TreePine, Send, CheckCircle2, XCircle, Loader2, ArrowRight } from "lucide-react";
+import { Clock, LogOut, Trophy, TreePine, Send, CheckCircle2, XCircle, Loader2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useCompetition } from "@/contexts/CompetitionContext";
 import { Badge } from "@/components/ui/badge";
@@ -12,20 +13,6 @@ import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { SCOUT_SECTIONS, ScoutSection } from "@/types/competition";
 import { SectionBadge } from "@/components/ui/section-badge";
-import { Link, Navigate } from "react-router-dom"; // ✅ ändrad
-
-export default function AwaitingAccess() {
-  const { user, signOut, refreshRoles, isGlobalAdmin, adminCompetitionIds, isCompetitionAdmin, isAdmin } = useAuth(); // ✅ lägg till isAdmin
-  const { selectableCompetitions, competitions } = useCompetition();
-  const { toast } = useToast();
-
-  // ✅ TIDIG EXIT: admins ska aldrig fastna här
-  if (isAdmin) {
-    return <Navigate to="/" replace />;
-  }
-
-  const isAnyCompetitionAdmin = (adminCompetitionIds?.length ?? 0) > 0;
-  const isAnyAdmin = isGlobalAdmin || isAnyCompetitionAdmin || isCompetitionAdmin;
 
 interface PermissionRequest {
   id: string;
@@ -46,12 +33,14 @@ type CompetitionInfo = {
 };
 
 export default function AwaitingAccess() {
-  const { user, signOut, refreshRoles, isGlobalAdmin, adminCompetitionIds, isCompetitionAdmin } = useAuth();
+  const { user, signOut, refreshRoles, isAdmin } = useAuth();
   const { selectableCompetitions, competitions } = useCompetition();
   const { toast } = useToast();
 
-  const isAnyCompetitionAdmin = (adminCompetitionIds?.length ?? 0) > 0;
-  const isAnyAdmin = isGlobalAdmin || isAnyCompetitionAdmin || isCompetitionAdmin;
+  // ✅ Admins ska aldrig fastna här
+  if (isAdmin) {
+    return <Navigate to="/" replace />;
+  }
 
   const [selectedCompetition, setSelectedCompetition] = useState<string>("");
   const [selectedSections, setSelectedSections] = useState<ScoutSection[]>([]);
@@ -84,7 +73,6 @@ export default function AwaitingAccess() {
     // Hämta competition-info för alla competition_id som förekommer i requests (best effort)
     const uniqueCompetitionIds = Array.from(new Set(requests.map((r) => r.competition_id).filter(Boolean)));
 
-    // Vi försöker läsa från competitions-tabellen. Om RLS stoppar -> fall back på CompetitionContext listan.
     if (uniqueCompetitionIds.length > 0) {
       const { data: comps, error: compsErr } = await (supabase as any)
         .from("competitions")
@@ -125,15 +113,6 @@ export default function AwaitingAccess() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // Admins ska inte fastna här:
-  useEffect(() => {
-    if (isAnyAdmin) {
-      // Man kan välja: auto-redirect eller bara visa CTA.
-      // Jag lämnar den som CTA i UI för tydlighet.
-      // Vill du auto-redirecta: window.location.assign("/");
-    }
-  }, [isAnyAdmin]);
-
   // Set default competition if only one selectable competition exists
   useEffect(() => {
     if (selectableCompetitions.length === 1 && !selectedCompetition) {
@@ -143,10 +122,8 @@ export default function AwaitingAccess() {
 
   // Check for approved requests and refresh roles (så AuthContext får scorer-flaggan)
   useEffect(() => {
-    const approvedRequests = existingRequests.filter((r) => r.status === "approved");
-    if (approvedRequests.length > 0) {
-      refreshRoles();
-    }
+    const approved = existingRequests.some((r) => r.status === "approved");
+    if (approved) refreshRoles();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [existingRequests]);
 
@@ -327,34 +304,6 @@ export default function AwaitingAccess() {
 
       <main className="container px-4 py-12">
         <div className="max-w-2xl mx-auto space-y-6">
-          {/* Admin shortcut: if admin, don't block */}
-          {isAnyAdmin && (
-            <Card className="border-primary/30">
-              <CardHeader className="text-center">
-                <CardTitle className="text-xl">Du är admin</CardTitle>
-                <CardDescription>
-                  Som global admin eller tävlingsadmin ska du inte fastna på denna sida.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-3">
-                <Button asChild className="w-full">
-                  <Link to="/">
-                    <ArrowRight className="h-4 w-4 mr-2" />
-                    Gå till Dashboard
-                  </Link>
-                </Button>
-
-                {/* Om du vill kunna gå till admin direkt */}
-                <Button asChild variant="outline" className="w-full">
-                  <Link to="/admin">
-                    <ArrowRight className="h-4 w-4 mr-2" />
-                    Gå till Administration
-                  </Link>
-                </Button>
-              </CardContent>
-            </Card>
-          )}
-
           {/* Base info card */}
           <Card>
             <CardHeader className="text-center">
@@ -363,8 +312,8 @@ export default function AwaitingAccess() {
               </div>
               <CardTitle className="text-2xl">Väntar på behörighet</CardTitle>
               <CardDescription className="text-base">
-                Ditt konto är aktivt. Ansök om poängsättarbehörighet nedan
-                eller vänta på att en administratör tilldelar dig behörigheter.
+                Ditt konto är aktivt. Ansök om poängsättarbehörighet nedan eller vänta på att en administratör tilldelar dig
+                behörigheter.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
@@ -375,8 +324,8 @@ export default function AwaitingAccess() {
             </CardContent>
           </Card>
 
-          {/* Request Permission (only meaningful for non-admins) */}
-          {!isAnyAdmin && !fetching && selectableCompetitions.length > 0 && (
+          {/* Request Permission */}
+          {!fetching && selectableCompetitions.length > 0 && (
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-lg">
@@ -438,7 +387,11 @@ export default function AwaitingAccess() {
                     </div>
 
                     {availableSections.length > 0 && (
-                      <Button onClick={handleSubmitRequest} disabled={loading || selectedSections.length === 0} className="w-full">
+                      <Button
+                        onClick={handleSubmitRequest}
+                        disabled={loading || selectedSections.length === 0}
+                        className="w-full"
+                      >
                         {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                         Skicka ansökan
                       </Button>
@@ -449,15 +402,13 @@ export default function AwaitingAccess() {
             </Card>
           )}
 
-          {/* No competitions for non-admin */}
-          {!isAnyAdmin && !fetching && selectableCompetitions.length === 0 && (
+          {/* No competitions */}
+          {!fetching && selectableCompetitions.length === 0 && (
             <Card>
               <CardContent className="flex flex-col items-center justify-center py-8">
                 <Trophy className="h-12 w-12 text-muted-foreground mb-4" />
                 <h3 className="text-lg font-semibold mb-2">Inga tävlingar att ansöka för</h3>
-                <p className="text-muted-foreground text-center">
-                  Det finns inga tävlingar du kan ansöka behörighet för just nu.
-                </p>
+                <p className="text-muted-foreground text-center">Det finns inga tävlingar du kan ansöka behörighet för just nu.</p>
               </CardContent>
             </Card>
           )}
