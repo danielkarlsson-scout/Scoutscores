@@ -12,7 +12,20 @@ import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { SCOUT_SECTIONS, ScoutSection } from "@/types/competition";
 import { SectionBadge } from "@/components/ui/section-badge";
-import { Link } from "react-router-dom";
+import { Link, Navigate } from "react-router-dom"; // ✅ ändrad
+
+export default function AwaitingAccess() {
+  const { user, signOut, refreshRoles, isGlobalAdmin, adminCompetitionIds, isCompetitionAdmin, isAdmin } = useAuth(); // ✅ lägg till isAdmin
+  const { selectableCompetitions, competitions } = useCompetition();
+  const { toast } = useToast();
+
+  // ✅ TIDIG EXIT: admins ska aldrig fastna här
+  if (isAdmin) {
+    return <Navigate to="/" replace />;
+  }
+
+  const isAnyCompetitionAdmin = (adminCompetitionIds?.length ?? 0) > 0;
+  const isAnyAdmin = isGlobalAdmin || isAnyCompetitionAdmin || isCompetitionAdmin;
 
 interface PermissionRequest {
   id: string;
