@@ -52,10 +52,7 @@ export default function Competitions() {
     reopenCompetition,
     deleteCompetition,
     updateCompetitionById,
-  } = useCompetition()
-    const competitions = view === "active"
-    ? (activeCompetitions ?? [])
-    : (archivedCompetitions ?? []);
+  } = useCompetition();
 
   const [view, setView] = useState<'active' | 'archived'>('active');
   const [editingCompetition, setEditingCompetition] = useState<Competition | null>(null);
