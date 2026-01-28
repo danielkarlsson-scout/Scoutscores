@@ -21,9 +21,9 @@ interface CompetitionContextType {
   archivedCompetitions: Competition[];
 
   /**
-   * Scorer support:
-   * - `selectableCompetitions` are the competitions a scorer may actively score in (active only)
-   * - `allowedCompetitionIds` are the competition ids the scorer has permission for
+   * Scorer/admin support:
+   * - selectableCompetitions: competitions a user can actually select in UI
+   * - allowedCompetitionIds: competition ids the user is allowed to access (scoped)
    */
   selectableCompetitions: Competition[];
   allowedCompetitionIds: string[];
@@ -82,7 +82,16 @@ interface CompetitionContextType {
 
 const CompetitionContext = createContext<CompetitionContextType | undefined>(undefined);
 
+/**
+ * IMPORTANT:
+ * AuthContext använder localStorage key: "selectedCompetitionId"
+ * Den här filen använde tidigare: "scout-selected-competition"
+ *
+ * För att slippa att admin/scorer hamnar i "fastnar här" (ingen tävling vald)
+ * synkar vi nu båda nycklarna.
+ */
 const SELECTED_KEY = "scout-selected-competition";
+const AUTH_SELECTED_KEY = "selectedCompetitionId";
 
 // For save state map keys
 const scoreKey = (patrolId: string, stationId: string) => `${patrolId}:${stationId}`;
@@ -153,14 +162,44 @@ function mapDbTemplate(row: any): ScoutGroupTemplate {
   };
 }
 
+function readSelectedCompetitionId(): string | null {
+  try {
+    return (
+      localStorage.getItem(AUTH_SELECTED_KEY) ||
+      localStorage.getItem(SELECTED_KEY) ||
+      null
+    );
+  } catch {
+    return null;
+  }
+}
+
+function writeSelectedCompetitionId(id: string | null) {
+  try {
+    if (id) {
+      localStorage.setItem(SELECTED_KEY, id);
+      localStorage.setItem(AUTH_SELECTED_KEY, id);
+    } else {
+      localStorage.removeItem(SELECTED_KEY);
+      localStorage.removeItem(AUTH_SELECTED_KEY);
+    }
+  } catch {
+    // ignore
+  }
+}
+
 export function CompetitionProvider({ children }: { children: React.ReactNode }) {
-  const { user, isGlobalAdmin, isCompetitionAdmin, isAdmin, adminCompetitionIds } = useAuth();
+  const { user, isGlobalAdmin, adminCompetitionIds, isAdmin } = useAuth();
+
+  // NOTE: isAdmin i AuthContext betyder "admin för vald tävling".
+  // Här behöver vi veta "scoped admin for ANY competitions".
+  const isAnyCompetitionAdmin = adminCompetitionIds.length > 0;
+  const isAnyAdmin = isGlobalAdmin || isAnyCompetitionAdmin;
 
   const [competitions, setCompetitions] = useState<Competition[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(() => localStorage.getItem(SELECTED_KEY));
+  const [selectedId, setSelectedId] = useState<string | null>(() => readSelectedCompetitionId());
 
   const [scorerCompetitionIds, setScorerCompetitionIds] = useState<string[]>([]);
-
   const [scoutGroupTemplates, setScoutGroupTemplates] = useState<ScoutGroupTemplate[]>([]);
 
   // For optimistic scoring + status
@@ -174,18 +213,46 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   const activeCompetitions = useMemo(() => competitions.filter((c) => c.status === "active"), [competitions]);
   const archivedCompetitions = useMemo(() => competitions.filter((c) => c.status === "closed"), [competitions]);
 
-  const scorerActiveCompetitions = useMemo(() => {
-    if (isAdmin) return activeCompetitions;
-    const allowed = new Set(scorerCompetitionIds);
+  /**
+   * allowedCompetitionIds:
+   * - global admin: all competitions (by id)
+   * - competition admin: only adminCompetitionIds
+   * - scorer: only scorerCompetitionIds (active filtering is applied in selectableCompetitions)
+   */
+  const allowedCompetitionIds = useMemo(() => {
+    if (isGlobalAdmin) return competitions.map((c) => c.id);
+    if (isAnyCompetitionAdmin) return adminCompetitionIds.map(String);
+    return scorerCompetitionIds.map(String);
+  }, [isGlobalAdmin, isAnyCompetitionAdmin, adminCompetitionIds, scorerCompetitionIds, competitions]);
+
+  const selectableCompetitions = useMemo(() => {
+    if (isGlobalAdmin) return activeCompetitions;
+
+    if (isAnyCompetitionAdmin) {
+      const allowed = new Set(adminCompetitionIds.map(String));
+      return activeCompetitions.filter((c) => allowed.has(c.id));
+    }
+
+    // scorer: only active competitions where user has permission
+    const allowed = new Set(scorerCompetitionIds.map(String));
     return activeCompetitions.filter((c) => allowed.has(c.id));
-  }, [activeCompetitions, isAdmin, scorerCompetitionIds]);
+  }, [isGlobalAdmin, isAnyCompetitionAdmin, adminCompetitionIds, scorerCompetitionIds, activeCompetitions]);
 
   const canSelectCompetition = useCallback(
     (competitionId: string) => {
-      if (isAdmin) return true;
-      return scorerCompetitionIds.includes(competitionId) && activeCompetitions.some((c) => c.id === competitionId);
+      if (isGlobalAdmin) return true;
+
+      if (isAnyCompetitionAdmin) {
+        return adminCompetitionIds.map(String).includes(String(competitionId));
+      }
+
+      // scorer: only allow selecting active competitions they have permission for
+      return (
+        scorerCompetitionIds.map(String).includes(String(competitionId)) &&
+        activeCompetitions.some((c) => c.id === competitionId)
+      );
     },
-    [isAdmin, scorerCompetitionIds, activeCompetitions]
+    [isGlobalAdmin, isAnyCompetitionAdmin, adminCompetitionIds, scorerCompetitionIds, activeCompetitions]
   );
 
   const stations = competition?.stations ?? [];
@@ -193,33 +260,79 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   const scores = competition?.scores ?? [];
   const scoutGroups = competition?.scoutGroups ?? [];
 
-  // persist selection
+  // persist selection (sync to both keys)
   useEffect(() => {
-    if (selectedId) localStorage.setItem(SELECTED_KEY, selectedId);
-    else localStorage.removeItem(SELECTED_KEY);
+    writeSelectedCompetitionId(selectedId);
   }, [selectedId]);
+
+  // keep in sync if something else updates localStorage
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === SELECTED_KEY || e.key === AUTH_SELECTED_KEY) {
+        const v = readSelectedCompetitionId();
+        setSelectedId(v);
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   // Auto-select / validate selection
   useEffect(() => {
-    // Admin: previous behavior (first active)
-    if (isAdmin) {
-      if (!selectedId && activeCompetitions.length > 0) setSelectedId(activeCompetitions[0].id);
+    // Global admin: prefer first active, else first archived, else null
+    if (isGlobalAdmin) {
+      if (!selectedId) {
+        if (activeCompetitions.length > 0) setSelectedId(activeCompetitions[0].id);
+        else if (archivedCompetitions.length > 0) setSelectedId(archivedCompetitions[0].id);
+      } else {
+        // ensure selected exists
+        if (!competitions.some((c) => c.id === selectedId)) {
+          if (activeCompetitions.length > 0) setSelectedId(activeCompetitions[0].id);
+          else if (archivedCompetitions.length > 0) setSelectedId(archivedCompetitions[0].id);
+          else setSelectedId(null);
+        }
+      }
       return;
     }
 
-    // Scorer: only allow selecting active competitions they have permission for
-    if (scorerActiveCompetitions.length === 0) {
+    // Competition admin: only allow their competitions (active or archived)
+    if (isAnyCompetitionAdmin) {
+      const allowed = new Set(adminCompetitionIds.map(String));
+      const allowedList = competitions.filter((c) => allowed.has(c.id));
+      if (allowedList.length === 0) {
+        setSelectedId(null);
+        return;
+      }
+
+      if (!selectedId || !allowed.has(selectedId)) {
+        const firstActive = allowedList.find((c) => c.status === "active");
+        setSelectedId(firstActive?.id ?? allowedList[0].id);
+      }
+      return;
+    }
+
+    // Scorer: only active competitions they have permission for
+    if (selectableCompetitions.length === 0) {
       setSelectedId(null);
       return;
     }
 
-    if (!selectedId || !scorerActiveCompetitions.some((c) => c.id === selectedId)) {
-      setSelectedId(scorerActiveCompetitions[0].id);
+    if (!selectedId || !selectableCompetitions.some((c) => c.id === selectedId)) {
+      setSelectedId(selectableCompetitions[0].id);
     }
-  }, [isAdmin, selectedId, activeCompetitions, scorerActiveCompetitions]);
+  }, [
+    isGlobalAdmin,
+    isAnyCompetitionAdmin,
+    adminCompetitionIds,
+    selectableCompetitions,
+    competitions,
+    activeCompetitions,
+    archivedCompetitions,
+    selectedId,
+  ]);
 
   const refreshAll = useCallback(async () => {
-    // 1) competitions
+    // 1) competitions (we fetch all rows, RLS should restrict where needed)
     const { data: comps, error: compsErr } = await supabase
       .from("competitions")
       .select("id,name,date,is_active,created_at,closed_at")
