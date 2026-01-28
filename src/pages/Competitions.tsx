@@ -25,17 +25,17 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { 
-  Trophy, 
-  Calendar, 
-  Flag, 
-  Users, 
-  Archive, 
-  RotateCcw, 
-  Trash2, 
+import {
+  Trophy,
+  Calendar,
+  Flag,
+  Users,
+  Archive,
+  RotateCcw,
+  Trash2,
   Play,
   CheckCircle2,
-  Pencil
+  Pencil,
 } from 'lucide-react';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -43,17 +43,17 @@ import { cn } from '@/lib/utils';
 import { Competition } from '@/types/competition';
 
 export default function Competitions() {
-  const { 
-    activeCompetitions, 
-    archivedCompetitions, 
+  const {
+    activeCompetitions,
+    archivedCompetitions,
     competition: selectedCompetition,
     selectCompetition,
     closeCompetition,
     reopenCompetition,
     deleteCompetition,
-    updateCompetitionById
+    updateCompetitionById,
   } = useCompetition();
-  
+
   const [view, setView] = useState<'active' | 'archived'>('active');
   const [editingCompetition, setEditingCompetition] = useState<Competition | null>(null);
   const [editName, setEditName] = useState('');
@@ -116,9 +116,9 @@ export default function Competitions() {
 
       {competitions.length > 0 ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {competitions.map(comp => (
-            <Card 
-              key={comp.id} 
+          {competitions.map((comp) => (
+            <Card
+              key={comp.id}
               className={cn(
                 'relative transition-all hover:shadow-md',
                 selectedCompetition?.id === comp.id && 'ring-2 ring-primary'
@@ -130,6 +130,7 @@ export default function Competitions() {
                   Vald
                 </Badge>
               )}
+
               <CardHeader className="pb-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
@@ -139,21 +140,25 @@ export default function Competitions() {
                       {formatDate(comp.date)}
                     </CardDescription>
                   </div>
+
                   <div className="flex items-center gap-1">
-                    <Button 
-                      size="icon" 
-                      variant="ghost" 
+                    <Button
+                      size="icon"
+                      variant="ghost"
                       className="h-8 w-8"
                       onClick={() => handleEditClick(comp)}
+                      aria-label="Redigera tävling"
                     >
                       <Pencil className="h-4 w-4" />
                     </Button>
+
                     <Badge variant={comp.status === 'active' ? 'default' : 'secondary'}>
                       {comp.status === 'active' ? 'Aktiv' : 'Avslutad'}
                     </Badge>
                   </div>
                 </div>
               </CardHeader>
+
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-3 gap-2 text-center">
                   <div className="rounded-lg bg-muted p-2">
@@ -176,16 +181,13 @@ export default function Competitions() {
                 <div className="flex flex-wrap gap-2">
                   {comp.status === 'active' ? (
                     <>
-                      <Button 
-                        size="sm" 
-                        onClick={() => handleSelectAndNavigate(comp.id)}
-                        className="flex-1"
-                      >
+                      <Button size="sm" onClick={() => handleSelectAndNavigate(comp.id)} className="flex-1">
                         Välj tävling
                       </Button>
+
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
-                          <Button size="sm" variant="outline">
+                          <Button size="sm" variant="outline" aria-label="Avsluta tävling">
                             <Archive className="h-4 w-4" />
                           </Button>
                         </AlertDialogTrigger>
@@ -207,8 +209,8 @@ export default function Competitions() {
                     </>
                   ) : (
                     <>
-                      <Button 
-                        size="sm" 
+                      <Button
+                        size="sm"
                         variant="outline"
                         onClick={() => reopenCompetition(comp.id)}
                         className="flex-1 gap-1"
@@ -216,9 +218,10 @@ export default function Competitions() {
                         <RotateCcw className="h-4 w-4" />
                         Återöppna
                       </Button>
+
                       <AlertDialog>
                         <AlertDialogTrigger asChild>
-                          <Button size="sm" variant="destructive">
+                          <Button size="sm" variant="destructive" aria-label="Ta bort tävling">
                             <Trash2 className="h-4 w-4" />
                           </Button>
                         </AlertDialogTrigger>
@@ -226,13 +229,13 @@ export default function Competitions() {
                           <AlertDialogHeader>
                             <AlertDialogTitle>Ta bort tävling?</AlertDialogTitle>
                             <AlertDialogDescription>
-                              "{comp.name}" och all tillhörande data kommer att raderas permanent. 
-                              Denna åtgärd går inte att ångra.
+                              "{comp.name}" och all tillhörande data kommer att raderas permanent. Denna åtgärd går inte att
+                              ångra.
                             </AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>
                             <AlertDialogCancel>Avbryt</AlertDialogCancel>
-                            <AlertDialogAction 
+                            <AlertDialogAction
                               onClick={() => deleteCompetition(comp.id)}
                               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                             >
@@ -246,9 +249,7 @@ export default function Competitions() {
                 </div>
 
                 {comp.closedAt && (
-                  <p className="text-xs text-muted-foreground text-center">
-                    Avslutad {formatDate(comp.closedAt)}
-                  </p>
+                  <p className="text-xs text-muted-foreground text-center">Avslutad {formatDate(comp.closedAt)}</p>
                 )}
               </CardContent>
             </Card>
@@ -261,34 +262,34 @@ export default function Competitions() {
               <>
                 <Trophy className="h-12 w-12 text-muted-foreground mb-4" />
                 <h3 className="text-lg font-semibold mb-2">Inga aktiva tävlingar</h3>
-                <p className="text-muted-foreground text-center mb-4">
-                  Skapa din första tävling för att komma igång.
-                </p>
+                <p className="text-muted-foreground text-center mb-4">Skapa din första tävling för att komma igång.</p>
                 <CompetitionForm />
               </>
             ) : (
               <>
                 <Archive className="h-12 w-12 text-muted-foreground mb-4" />
                 <h3 className="text-lg font-semibold mb-2">Inga arkiverade tävlingar</h3>
-                <p className="text-muted-foreground text-center">
-                  Avslutade tävlingar visas här.
-                </p>
+                <p className="text-muted-foreground text-center">Avslutade tävlingar visas här.</p>
               </>
             )}
           </CardContent>
         </Card>
       )}
+
       {/* Edit Competition Dialog */}
       <Dialog open={!!editingCompetition} onOpenChange={(open) => !open && setEditingCompetition(null)}>
         <DialogContent>
-          <form onSubmit={(e) => { e.preventDefault(); handleEditSave(); }}>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              handleEditSave();
+            }}
+          >
             <DialogHeader>
               <DialogTitle>Redigera tävling</DialogTitle>
-              <DialogDescription>
-                Ändra namn eller datum på tävlingen.
-              </DialogDescription>
+              <DialogDescription>Ändra namn eller datum på tävlingen.</DialogDescription>
             </DialogHeader>
-            
+
             <div className="grid gap-4 py-4">
               <div className="grid gap-2">
                 <Label htmlFor="edit-name">Tävlingsnamn</Label>
@@ -300,7 +301,7 @@ export default function Competitions() {
                   required
                 />
               </div>
-              
+
               <div className="grid gap-2">
                 <Label htmlFor="edit-date">Datum</Label>
                 <Input
@@ -312,14 +313,12 @@ export default function Competitions() {
                 />
               </div>
             </div>
-            
+
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setEditingCompetition(null)}>
                 Avbryt
               </Button>
-              <Button type="submit">
-                Spara ändringar
-              </Button>
+              <Button type="submit">Spara ändringar</Button>
             </DialogFooter>
           </form>
         </DialogContent>
