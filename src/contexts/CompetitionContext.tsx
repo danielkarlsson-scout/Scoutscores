@@ -1,4 +1,11 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import {
   Competition,
   CompetitionStatus,
@@ -20,11 +27,6 @@ interface CompetitionContextType {
   activeCompetitions: Competition[];
   archivedCompetitions: Competition[];
 
-  /**
-   * Scorer/admin support:
-   * - selectableCompetitions: competitions a user can actually select in UI
-   * - allowedCompetitionIds: competition ids the user is allowed to access (scoped)
-   */
   selectableCompetitions: Competition[];
   allowedCompetitionIds: string[];
   canSelectCompetition: (competitionId: string) => boolean;
@@ -37,7 +39,6 @@ interface CompetitionContextType {
 
   scoutGroupTemplates: ScoutGroupTemplate[];
 
-  // competitions
   createCompetition: (data: { name: string; date: string }) => Promise<Competition>;
   selectCompetition: (id: string) => void;
   closeCompetition: (id: string) => Promise<void>;
@@ -45,55 +46,39 @@ interface CompetitionContextType {
   deleteCompetition: (id: string) => Promise<void>;
   updateCompetitionById: (id: string, updates: Partial<Competition>) => void;
 
-  // stations
   addStation: (station: Omit<Station, "id" | "createdAt">) => Promise<void>;
   updateStation: (id: string, updates: Partial<Station>) => Promise<void>;
   deleteStation: (id: string) => Promise<void>;
 
-  // patrols
   addPatrol: (patrol: Omit<Patrol, "id" | "createdAt">) => Promise<void>;
   updatePatrol: (id: string, updates: Partial<Patrol>) => Promise<void>;
   deletePatrol: (id: string) => Promise<void>;
 
-  // scout groups
   addScoutGroup: (name: string) => Promise<void>;
   updateScoutGroup: (id: string, name: string) => Promise<void>;
   deleteScoutGroup: (id: string) => Promise<void>;
   importScoutGroupsFromTemplate: (templateId: string) => Promise<void>;
 
-  // templates (DB)
   saveCurrentGroupsAsTemplate: (templateName: string) => Promise<void>;
   deleteScoutGroupTemplate: (id: string) => Promise<void>;
 
-  // scoring
   setScore: (patrolId: string, stationId: string, score: number) => Promise<void>;
   getScore: (patrolId: string, stationId: string) => number;
   getScoreSaveState: (patrolId: string, stationId: string) => SaveState;
   retrySaveScore: (patrolId: string, stationId: string) => Promise<void>;
 
-  // computed
   getPatrolsWithScores: (section?: ScoutSection) => PatrolWithScore[];
   getStationScores: (stationId: string) => Array<{ patrol: Patrol; score: number }>;
   getScoutGroupName: (groupId: string) => string | undefined;
 
-  // local helper
   updateCompetition: (updates: Partial<Competition>) => void;
 }
 
 const CompetitionContext = createContext<CompetitionContextType | undefined>(undefined);
 
-/**
- * IMPORTANT:
- * AuthContext använder localStorage key: "selectedCompetitionId"
- * Den här filen använde tidigare: "scout-selected-competition"
- *
- * För att slippa att admin/scorer hamnar i "fastnar här" (ingen tävling vald)
- * synkar vi nu båda nycklarna.
- */
 const SELECTED_KEY = "scout-selected-competition";
 const AUTH_SELECTED_KEY = "selectedCompetitionId";
 
-// For save state map keys
 const scoreKey = (patrolId: string, stationId: string) => `${patrolId}:${stationId}`;
 
 function mapDbCompetition(row: any): Competition {
@@ -189,70 +174,51 @@ function writeSelectedCompetitionId(id: string | null) {
 }
 
 export function CompetitionProvider({ children }: { children: React.ReactNode }) {
-  const { user, isGlobalAdmin, adminCompetitionIds, isAdmin } = useAuth();
+  const { user, isGlobalAdmin } = useAuth();
 
-  // NOTE: isAdmin i AuthContext betyder "admin för vald tävling".
-  // Här behöver vi veta "scoped admin for ANY competitions".
-  const isAnyCompetitionAdmin = adminCompetitionIds.length > 0;
-  const isAnyAdmin = isGlobalAdmin || isAnyCompetitionAdmin;
+  const [isAnyCompetitionAdmin, setIsAnyCompetitionAdmin] = useState(false);
 
   const [competitions, setCompetitions] = useState<Competition[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(() => readSelectedCompetitionId());
-
-  const [scorerCompetitionIds, setScorerCompetitionIds] = useState<string[]>([]);
   const [scoutGroupTemplates, setScoutGroupTemplates] = useState<ScoutGroupTemplate[]>([]);
 
-  // For optimistic scoring + status
   const [scoreOverrides, setScoreOverrides] = useState<Map<string, number>>(new Map());
   const [scoreSaveState, setScoreSaveState] = useState<Map<string, SaveState>>(new Map());
-  const [pendingRetry, setPendingRetry] = useState<Map<string, { patrolId: string; stationId: string; score: number }>>(
-    new Map()
+  const [pendingRetry, setPendingRetry] = useState<
+    Map<string, { patrolId: string; stationId: string; score: number }>
+  >(new Map());
+
+  const competition = useMemo(
+    () => competitions.find((c) => c.id === selectedId) ?? null,
+    [competitions, selectedId]
   );
 
-  const competition = useMemo(() => competitions.find((c) => c.id === selectedId) ?? null, [competitions, selectedId]);
-  const activeCompetitions = useMemo(() => competitions.filter((c) => c.status === "active"), [competitions]);
-  const archivedCompetitions = useMemo(() => competitions.filter((c) => c.status === "closed"), [competitions]);
+  const activeCompetitions = useMemo(
+    () => competitions.filter((c) => c.status === "active"),
+    [competitions]
+  );
 
-  /**
-   * allowedCompetitionIds:
-   * - global admin: all competitions (by id)
-   * - competition admin: only adminCompetitionIds
-   * - scorer: only scorerCompetitionIds (active filtering is applied in selectableCompetitions)
-   */
-  const allowedCompetitionIds = useMemo(() => {
-    if (isGlobalAdmin) return competitions.map((c) => c.id);
-    if (isAnyCompetitionAdmin) return adminCompetitionIds.map(String);
-    return scorerCompetitionIds.map(String);
-  }, [isGlobalAdmin, isAnyCompetitionAdmin, adminCompetitionIds, scorerCompetitionIds, competitions]);
+  const archivedCompetitions = useMemo(
+    () => competitions.filter((c) => c.status === "closed"),
+    [competitions]
+  );
 
-  const selectableCompetitions = useMemo(() => {
-    if (isGlobalAdmin) return activeCompetitions;
+  // RLS ska redan begränsa vilka competitions du ser.
+  // Global admin: ser alla. Admin/scorer: ser de de har access till.
+  const allowedCompetitionIds = useMemo(
+    () => competitions.map((c) => c.id),
+    [competitions]
+  );
 
-    if (isAnyCompetitionAdmin) {
-      const allowed = new Set(adminCompetitionIds.map(String));
-      return activeCompetitions.filter((c) => allowed.has(c.id));
-    }
-
-    // scorer: only active competitions where user has permission
-    const allowed = new Set(scorerCompetitionIds.map(String));
-    return activeCompetitions.filter((c) => allowed.has(c.id));
-  }, [isGlobalAdmin, isAnyCompetitionAdmin, adminCompetitionIds, scorerCompetitionIds, activeCompetitions]);
+  // UI: låt användaren välja bland aktiva som de ser via RLS
+  const selectableCompetitions = useMemo(() => activeCompetitions, [activeCompetitions]);
 
   const canSelectCompetition = useCallback(
     (competitionId: string) => {
-      if (isGlobalAdmin) return true;
-
-      if (isAnyCompetitionAdmin) {
-        return adminCompetitionIds.map(String).includes(String(competitionId));
-      }
-
-      // scorer: only allow selecting active competitions they have permission for
-      return (
-        scorerCompetitionIds.map(String).includes(String(competitionId)) &&
-        activeCompetitions.some((c) => c.id === competitionId)
-      );
+      // får bara välja sådant vi faktiskt ser
+      return selectableCompetitions.some((c) => c.id === competitionId);
     },
-    [isGlobalAdmin, isAnyCompetitionAdmin, adminCompetitionIds, scorerCompetitionIds, activeCompetitions]
+    [selectableCompetitions]
   );
 
   const stations = competition?.stations ?? [];
@@ -277,62 +243,45 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
-  // Auto-select / validate selection
+  // admin-anywhere via RPC (ingen select mot competition_admins)
   useEffect(() => {
-    // Global admin: prefer first active, else first archived, else null
-    if (isGlobalAdmin) {
-      if (!selectedId) {
-        if (activeCompetitions.length > 0) setSelectedId(activeCompetitions[0].id);
-        else if (archivedCompetitions.length > 0) setSelectedId(archivedCompetitions[0].id);
-      } else {
-        // ensure selected exists
-        if (!competitions.some((c) => c.id === selectedId)) {
-          if (activeCompetitions.length > 0) setSelectedId(activeCompetitions[0].id);
-          else if (archivedCompetitions.length > 0) setSelectedId(archivedCompetitions[0].id);
-          else setSelectedId(null);
-        }
-      }
-      return;
-    }
+    let cancelled = false;
 
-    // Competition admin: only allow their competitions (active or archived)
-    if (isAnyCompetitionAdmin) {
-      const allowed = new Set(adminCompetitionIds.map(String));
-      const allowedList = competitions.filter((c) => allowed.has(c.id));
-      if (allowedList.length === 0) {
-        setSelectedId(null);
+    const run = async () => {
+      if (!user) {
+        setIsAnyCompetitionAdmin(false);
         return;
       }
-
-      if (!selectedId || !allowed.has(selectedId)) {
-        const firstActive = allowedList.find((c) => c.status === "active");
-        setSelectedId(firstActive?.id ?? allowedList[0].id);
+      const { data, error } = await supabase.rpc("is_any_competition_admin");
+      if (!cancelled) {
+        setIsAnyCompetitionAdmin(!error && !!data);
       }
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
+
+  // Auto-select / validate selection
+  useEffect(() => {
+    // Om vi inte har något val ännu: välj första aktiva vi kan se
+    if (!selectedId) {
+      if (selectableCompetitions.length > 0) setSelectedId(selectableCompetitions[0].id);
+      else setSelectedId(null);
       return;
     }
 
-    // Scorer: only active competitions they have permission for
-    if (selectableCompetitions.length === 0) {
-      setSelectedId(null);
-      return;
+    // Om selection inte längre finns i listan vi ser: välj om
+    if (!competitions.some((c) => c.id === selectedId)) {
+      if (selectableCompetitions.length > 0) setSelectedId(selectableCompetitions[0].id);
+      else setSelectedId(null);
     }
-
-    if (!selectedId || !selectableCompetitions.some((c) => c.id === selectedId)) {
-      setSelectedId(selectableCompetitions[0].id);
-    }
-  }, [
-    isGlobalAdmin,
-    isAnyCompetitionAdmin,
-    adminCompetitionIds,
-    selectableCompetitions,
-    competitions,
-    activeCompetitions,
-    archivedCompetitions,
-    selectedId,
-  ]);
+  }, [selectedId, competitions, selectableCompetitions]);
 
   const refreshAll = useCallback(async () => {
-    // 1) competitions (we fetch all rows, RLS should restrict where needed)
+    // 1) competitions (RLS ska redan begränsa)
     const { data: comps, error: compsErr } = await supabase
       .from("competitions")
       .select("id,name,date,is_active,created_at,closed_at")
@@ -346,47 +295,19 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
     const mapped = (comps ?? []).map(mapDbCompetition);
 
-    // 1.1) scorer permissions -> which competitions scorer can access
-    let permIds: string[] = [];
-    if (!isAnyAdmin && user?.id) {
-      const { data: perms, error: permsErr } = await supabase
-        .from("scorer_permissions")
-        .select("competition_id")
-        .eq("user_id", user.id);
+    // För scorers: vi laddar bara relaterad data för aktiva tävlingar
+    // För admin/global admin: vi kan ladda för allt vi ser
+    const idsToFetch =
+      isGlobalAdmin || isAnyCompetitionAdmin
+        ? mapped.map((c) => c.id)
+        : mapped.filter((c) => c.status === "active").map((c) => c.id);
 
-      if (permsErr) {
-        console.error("Failed to load scorer permissions:", permsErr);
-        permIds = [];
-      } else {
-        permIds = (perms ?? []).map((p: any) => String(p.competition_id));
-      }
-    }
-    setScorerCompetitionIds(permIds);
-
-    // Determine which competitions we are allowed to fetch related data for
-    // - Global admin: all competitions
-    // - Competition admin: only their competitions (active + closed)
-    // - Scorer: only ACTIVE competitions they have permission for
-    let idsToFetch: string[] = [];
-
-    if (isGlobalAdmin) {
-      idsToFetch = mapped.map((c) => c.id);
-    } else if (isAnyCompetitionAdmin) {
-      const allowed = new Set(adminCompetitionIds.map(String));
-      idsToFetch = mapped.filter((c) => allowed.has(c.id)).map((c) => c.id);
-    } else {
-      const allowed = new Set(permIds.map(String));
-      idsToFetch = mapped.filter((c) => c.status === "active" && allowed.has(c.id)).map((c) => c.id);
-    }
-
-    // Always set base competitions list (even if no related data)
-    // so dropdown can render and "Välj tävling..." can populate.
+    // Always set base competitions list (så UI inte dör)
     if (idsToFetch.length === 0) {
       setCompetitions(mapped);
       return;
     }
 
-    // 2) fetch related tables in parallel (only for idsToFetch)
     const [stationsRes, patrolsRes, scoresRes, groupsRes] = await Promise.all([
       supabase
         .from("stations")
@@ -452,7 +373,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     }));
 
     setCompetitions(merged);
-  }, [isGlobalAdmin, isAnyAdmin, isAnyCompetitionAdmin, adminCompetitionIds, user?.id]);
+  }, [isGlobalAdmin, isAnyCompetitionAdmin]);
 
   const refreshTemplates = useCallback(async () => {
     const { data, error } = await supabase
@@ -477,47 +398,39 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   // -------------------------
   // competitions
   // -------------------------
-  const createCompetition = useCallback(async (data: { name: string; date: string }): Promise<Competition> => {
-    const name = data.name.trim();
-    const date = data.date;
+  const createCompetition = useCallback(
+    async (data: { name: string; date: string }): Promise<Competition> => {
+      const name = data.name.trim();
+      const date = data.date;
 
-    if (!name) throw new Error("Competition name is required");
+      if (!name) throw new Error("Competition name is required");
 
-    const { data: dbComp, error } = await supabase
-      .from("competitions")
-      .insert({ name, date, is_active: true })
-      .select("id,name,date,is_active,created_at,closed_at")
-      .single();
+      const { data: dbComp, error } = await supabase
+        .from("competitions")
+        .insert({ name, date, is_active: true })
+        .select("id,name,date,is_active,created_at,closed_at")
+        .single();
 
-    if (error || !dbComp) {
-      console.error("Failed to create competition:", error);
-      throw error ?? new Error("Failed to create competition");
-    }
-
-    // Best effort: make creator competition admin (if your DB trigger already does this, this is harmless)
-    if (user?.id) {
-      const { error: caErr } = await supabase
-        .from("competition_admins")
-        .insert({ competition_id: dbComp.id, user_id: user.id });
-
-      if (caErr) {
-        // fail soft - many setups will block this via RLS unless you have a trigger.
-        console.warn("Could not insert competition_admins row (best-effort):", caErr);
+      if (error || !dbComp) {
+        console.error("Failed to create competition:", error);
+        throw error ?? new Error("Failed to create competition");
       }
-    }
 
-    const newComp = mapDbCompetition(dbComp);
-    setCompetitions((prev) => [newComp, ...prev]);
-    setSelectedId(newComp.id);
+      // Viktigt: INGEN klient-insert i competition_admins här.
+      // Din DB-trigger (add_creator_as_competition_admin) ska hantera detta.
 
-    return newComp;
-  }, [user?.id]);
+      const newComp = mapDbCompetition(dbComp);
+      setCompetitions((prev) => [newComp, ...prev]);
+      setSelectedId(newComp.id);
+
+      return newComp;
+    },
+    []
+  );
 
   const selectCompetition = useCallback(
     (id: string) => {
-      if (canSelectCompetition(id)) {
-        setSelectedId(id);
-      }
+      if (canSelectCompetition(id)) setSelectedId(id);
     },
     [canSelectCompetition]
   );
@@ -526,17 +439,21 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     async (id: string) => {
       const closedAt = new Date().toISOString();
 
-      const { error } = await supabase.from("competitions").update({ is_active: false, closed_at: closedAt }).eq("id", id);
+      const { error } = await supabase
+        .from("competitions")
+        .update({ is_active: false, closed_at: closedAt })
+        .eq("id", id);
 
       if (error) {
         console.error("Failed to close competition:", error);
         return;
       }
 
-      setCompetitions((prev) => prev.map((c) => (c.id === id ? { ...c, status: "closed", closedAt } : c)));
+      setCompetitions((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, status: "closed", closedAt } : c))
+      );
 
       if (id === selectedId) {
-        // pick a sensible next selection among selectable competitions
         const nextSelectable = selectableCompetitions.filter((c) => c.id !== id);
         setSelectedId(nextSelectable[0]?.id ?? null);
       }
@@ -545,14 +462,19 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   );
 
   const reopenCompetition = useCallback(async (id: string) => {
-    const { error } = await supabase.from("competitions").update({ is_active: true, closed_at: null }).eq("id", id);
+    const { error } = await supabase
+      .from("competitions")
+      .update({ is_active: true, closed_at: null })
+      .eq("id", id);
 
     if (error) {
       console.error("Failed to reopen competition:", error);
       return;
     }
 
-    setCompetitions((prev) => prev.map((c) => (c.id === id ? { ...c, status: "active", closedAt: undefined } : c)));
+    setCompetitions((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, status: "active", closedAt: undefined } : c))
+    );
   }, []);
 
   const deleteCompetition = useCallback(
@@ -618,7 +540,9 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
       const newStation = mapDbStation(data);
       setCompetitions((prev) =>
-        prev.map((c) => (c.id === selectedId ? { ...c, stations: [...c.stations, newStation] } : c))
+        prev.map((c) =>
+          c.id === selectedId ? { ...c, stations: [...c.stations, newStation] } : c
+        )
       );
     },
     [selectedId]
@@ -785,7 +709,9 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       const newGroup = mapDbScoutGroup(data);
 
       setCompetitions((prev) =>
-        prev.map((c) => (c.id === selectedId ? { ...c, scoutGroups: [...c.scoutGroups, newGroup] } : c))
+        prev.map((c) =>
+          c.id === selectedId ? { ...c, scoutGroups: [...c.scoutGroups, newGroup] } : c
+        )
       );
     },
     [selectedId]
@@ -900,7 +826,9 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       const newGroups = (data ?? []).map(mapDbScoutGroup);
 
       setCompetitions((prev) =>
-        prev.map((c) => (c.id === selectedId ? { ...c, scoutGroups: [...c.scoutGroups, ...newGroups] } : c))
+        prev.map((c) =>
+          c.id === selectedId ? { ...c, scoutGroups: [...c.scoutGroups, ...newGroups] } : c
+        )
       );
     },
     [selectedId, scoutGroupTemplates, scoutGroups]
@@ -963,16 +891,18 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
       setScoreSaveState((prev) => new Map(prev).set(key, "saving"));
 
-      const { error } = await supabase.from("scores").upsert(
-        {
-          competition_id: selectedId,
-          patrol_id: patrolId,
-          station_id: stationId,
-          score,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "competition_id,patrol_id,station_id" }
-      );
+      const { error } = await supabase
+        .from("scores")
+        .upsert(
+          {
+            competition_id: selectedId,
+            patrol_id: patrolId,
+            station_id: stationId,
+            score,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "competition_id,patrol_id,station_id" }
+        );
 
       if (error) {
         console.error("Failed to save score:", error);
