@@ -2,7 +2,6 @@ import {
   createContext,
   useContext,
   useEffect,
-  useMemo,
   useState,
   ReactNode,
   useCallback,
@@ -71,14 +70,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       // ✅ GLOBAL ADMIN (via function, inte user_roles)
       const { data: isGlobal } = await supabase.rpc('is_global_admin');
-      setIsGlobalAdmin(!!isGlobal);
+      const global = !!isGlobal;
+      setIsGlobalAdmin(global);
 
       // ✅ COMPETITION ADMIN (för aktuell selectedCompetitionId)
       if (selectedCompetitionId) {
-        const { data: isCompAdmin } = await supabase.rpc(
-          'is_competition_admin',
-          { p_competition_id: selectedCompetitionId }
-        );
+        const { data: isCompAdmin } = await supabase.rpc('is_competition_admin', {
+          p_competition_id: selectedCompetitionId,
+        });
         setIsCompetitionAdmin(!!isCompAdmin);
       } else {
         setIsCompetitionAdmin(false);
@@ -92,19 +91,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       setIsScorer(!error && (perms?.length ?? 0) > 0);
 
-      // NYTT: hämta alla competition_admins för denna användare så vi kan returnera en trygg array
-      const { data: compAdminRows, error: compAdminErr } = await supabase
-        .from('competition_admins')
-        .select('competition_id')
-        .eq('user_id', user.id);
-
-      if (compAdminErr) {
-        // logga men fortsätt; håll default []
-        console.warn('Could not load competition_admins:', compAdminErr);
+      // NYTT: hämta alla competition_admins för denna användare (trygg array)
+      // OBS: Kör inte detta för global admin (de kan sakna rader och du vill inte trigga onödiga fetch-loopar)
+      if (global) {
         setAdminCompetitionIds([]);
       } else {
-        const ids = (compAdminRows ?? []).map((r: any) => String(r.competition_id));
-        setAdminCompetitionIds(ids);
+        const { data: compAdminRows, error: compAdminErr } = await supabase
+          .from('competition_admins')
+          .select('competition_id')
+          .eq('user_id', user.id);
+
+        if (compAdminErr) {
+          console.warn('Could not load competition_admins:', compAdminErr);
+          setAdminCompetitionIds([]);
+        } else {
+          const ids = (compAdminRows ?? []).map((r: any) =>
+            String(r.competition_id)
+          );
+          setAdminCompetitionIds(ids);
+        }
       }
     } catch (e) {
       console.error('Auth role fetch failed', e);
@@ -116,27 +121,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user, selectedCompetitionId]);
 
   useEffect(() => {
-    const { data: { subscription } } =
-      supabase.auth.onAuthStateChange((_evt, s) => {
-        setSession(s);
-        setUser(s?.user ?? null);
-        setLoading(false);
-        if (s?.user) fetchRoles();
-        else {
-          // när utloggning/ingen session: säkra defaults
-          setIsGlobalAdmin(false);
-          setIsCompetitionAdmin(false);
-          setIsScorer(false);
-          setAdminCompetitionIds([]);
-        }
-      });
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_evt, s) => {
+      setSession(s);
+      setUser(s?.user ?? null);
+      setLoading(false);
+
+      if (s?.user) {
+        fetchRoles();
+      } else {
+        // när utloggning/ingen session: säkra defaults
+        setIsGlobalAdmin(false);
+        setIsCompetitionAdmin(false);
+        setIsScorer(false);
+        setAdminCompetitionIds([]);
+      }
+    });
 
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
       setUser(data.session?.user ?? null);
       setLoading(false);
+
       if (data.session?.user) fetchRoles();
-      else setAdminCompetitionIds([]); // säkra default
+      else setAdminCompetitionIds([]);
     });
 
     return () => subscription.unsubscribe();
@@ -148,10 +157,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const signUp = async (email: string, password: string) => {
-    const redirectTo =
-      import.meta.env.PROD
-        ? 'https://scoutscores.vercel.app/verify-email'
-        : 'http://localhost:5173/verify-email';
+    const redirectTo = import.meta.env.PROD
+      ? 'https://scoutscores.vercel.app/verify-email'
+      : 'http://localhost:5173/verify-email';
 
     const { error } = await supabase.auth.signUp({
       email,
@@ -170,14 +178,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setAdminCompetitionIds([]);
   };
 
-  // canScoreSection tar section men i nuläget baseras beslutet på rollerna.
-  // Om du vill göra sektion-specifika kontroller här (scorer_sections) kan vi utöka.
-  const canScoreSection = (section: ScoutSection) => {
+  const canScoreSection = (_section: ScoutSection) => {
     if (isGlobalAdmin || isCompetitionAdmin) return true;
     return isScorer;
   };
 
-  const isAdmin = isGlobalAdmin || isCompetitionAdmin || adminCompetitionIds.length > 0;
+  const isAdmin =
+    isGlobalAdmin || isCompetitionAdmin || adminCompetitionIds.length > 0;
 
   return (
     <AuthContext.Provider
