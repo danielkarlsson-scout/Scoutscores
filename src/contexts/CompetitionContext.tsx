@@ -391,10 +391,23 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   }, []);
 
   useEffect(() => {
-    refreshAll();
-    refreshTemplates();
-  }, [refreshAll, refreshTemplates]);
+  let cancelled = false;
 
+  const run = async () => {
+    try {
+      await refreshAll();
+      await refreshTemplates();
+    } catch (e) {
+      console.error("Initial data load failed", e);
+    }
+  };
+
+  run();
+
+  return () => {
+    cancelled = true;
+  };
+}, []); // 👈 VIKTIGT: tom dependency-array
   // -------------------------
   // competitions
   // -------------------------
