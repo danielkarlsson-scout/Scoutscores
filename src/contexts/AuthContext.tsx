@@ -21,6 +21,9 @@ interface AuthContextType {
   isAdmin: boolean;
   isScorer: boolean;
 
+  // NYTT: alltid definierad array så .length aldrig kraschar
+  adminCompetitionIds: string[];
+
   selectedCompetitionId: string | null;
 
   canScoreSection: (section: ScoutSection) => boolean;
@@ -50,17 +53,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isCompetitionAdmin, setIsCompetitionAdmin] = useState(false);
   const [isScorer, setIsScorer] = useState(false);
 
+  // NYTT: defaulta alltid till tom array
+  const [adminCompetitionIds, setAdminCompetitionIds] = useState<string[]>([]);
+
   const selectedCompetitionId = getSelectedCompetitionId();
 
   const fetchRoles = useCallback(async () => {
-    if (!user) return;
+    if (!user) {
+      // säkerställ säkra defaults om ingen user
+      setIsGlobalAdmin(false);
+      setIsCompetitionAdmin(false);
+      setIsScorer(false);
+      setAdminCompetitionIds([]);
+      return;
+    }
 
     try {
       // ✅ GLOBAL ADMIN (via function, inte user_roles)
       const { data: isGlobal } = await supabase.rpc('is_global_admin');
       setIsGlobalAdmin(!!isGlobal);
 
-      // ✅ COMPETITION ADMIN
+      // ✅ COMPETITION ADMIN (för aktuell selectedCompetitionId)
       if (selectedCompetitionId) {
         const { data: isCompAdmin } = await supabase.rpc(
           'is_competition_admin',
@@ -79,11 +92,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       setIsScorer(!error && (perms?.length ?? 0) > 0);
 
+      // NYTT: hämta alla competition_admins för denna användare så vi kan returnera en trygg array
+      const { data: compAdminRows, error: compAdminErr } = await supabase
+        .from('competition_admins')
+        .select('competition_id')
+        .eq('user_id', user.id);
+
+      if (compAdminErr) {
+        // logga men fortsätt; håll default []
+        console.warn('Could not load competition_admins:', compAdminErr);
+        setAdminCompetitionIds([]);
+      } else {
+        const ids = (compAdminRows ?? []).map((r: any) => String(r.competition_id));
+        setAdminCompetitionIds(ids);
+      }
     } catch (e) {
       console.error('Auth role fetch failed', e);
       setIsGlobalAdmin(false);
       setIsCompetitionAdmin(false);
       setIsScorer(false);
+      setAdminCompetitionIds([]);
     }
   }, [user, selectedCompetitionId]);
 
@@ -94,6 +122,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser(s?.user ?? null);
         setLoading(false);
         if (s?.user) fetchRoles();
+        else {
+          // när utloggning/ingen session: säkra defaults
+          setIsGlobalAdmin(false);
+          setIsCompetitionAdmin(false);
+          setIsScorer(false);
+          setAdminCompetitionIds([]);
+        }
       });
 
     supabase.auth.getSession().then(({ data }) => {
@@ -101,6 +136,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(data.session?.user ?? null);
       setLoading(false);
       if (data.session?.user) fetchRoles();
+      else setAdminCompetitionIds([]); // säkra default
     });
 
     return () => subscription.unsubscribe();
@@ -131,14 +167,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsGlobalAdmin(false);
     setIsCompetitionAdmin(false);
     setIsScorer(false);
+    setAdminCompetitionIds([]);
   };
 
-  const canScoreSection = () => {
+  // canScoreSection tar section men i nuläget baseras beslutet på rollerna.
+  // Om du vill göra sektion-specifika kontroller här (scorer_sections) kan vi utöka.
+  const canScoreSection = (section: ScoutSection) => {
     if (isGlobalAdmin || isCompetitionAdmin) return true;
     return isScorer;
   };
 
-  const isAdmin = isGlobalAdmin || isCompetitionAdmin;
+  const isAdmin = isGlobalAdmin || isCompetitionAdmin || adminCompetitionIds.length > 0;
 
   return (
     <AuthContext.Provider
@@ -150,6 +189,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isCompetitionAdmin,
         isAdmin,
         isScorer,
+        adminCompetitionIds,
         selectedCompetitionId,
         canScoreSection,
         refreshRoles: fetchRoles,
