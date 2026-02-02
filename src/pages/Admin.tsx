@@ -475,7 +475,7 @@ export default function Admin() {
           <CardDescription>
             <div className="space-y-1">
               <div>
-                “Admin” betyder <b>Tävlingsadmin</b> för vald tävling. <b>Global admin</b> kan bara sättas i databasen.
+                “Admin” betyder <b>Tävlingsadmin</b> för vald tävling. 
               </div>
               <div>Scorers kan bara registrera poäng för sina tilldelade avdelningar (per tävling).</div>
             </div>
