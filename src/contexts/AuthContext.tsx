@@ -97,11 +97,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (globalErr) throw globalErr;
       setIsGlobalAdmin(!!isGlobal);
 
-      // ✅ COMPETITION ADMIN (scoped to selectedCompetitionId)
+      // ✅ COMPETITION ADMIN (scoped) via rpc (RLS-safe)
+      // NOTE: We intentionally avoid calling is_competition_admin here, because having
+      // overloaded functions (text/uuid) can make PostgREST fail to pick a candidate.
+      // The new model stores competition-scoped roles in user_competition_roles, so we
+      // can rely on has_competition_role(..., 'admin').
       if (selectedCompetitionId) {
         const { data: isCompAdmin, error: compErr } = await supabase.rpc(
-          "is_competition_admin",
-          { p_competition_id: selectedCompetitionId }
+          "has_competition_role",
+          { p_competition_id: selectedCompetitionId, p_role: "admin" }
         );
         if (compErr) throw compErr;
         setIsCompetitionAdmin(!!isCompAdmin);
