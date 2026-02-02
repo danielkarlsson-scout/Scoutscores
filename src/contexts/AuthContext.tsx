@@ -20,22 +20,13 @@ interface AuthContextType {
   isAdmin: boolean;
   isScorer: boolean;
 
-  // Alltid definierad array så .length aldrig kraschar
-  adminCompetitionIds: string[];
-
   selectedCompetitionId: string | null;
 
   canScoreSection: (section: ScoutSection) => boolean;
   refreshRoles: () => Promise<void>;
 
-  signIn: (
-    email: string,
-    password: string
-  ) => Promise<{ error: Error | null }>;
-  signUp: (
-    email: string,
-    password: string
-  ) => Promise<{ error: Error | null }>;
+  signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
+  signUp: (email: string, password: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
 }
 
@@ -58,16 +49,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isCompetitionAdmin, setIsCompetitionAdmin] = useState(false);
   const [isScorer, setIsScorer] = useState(false);
 
-  // Alltid definierad array – men vi fyller den inte längre från competition_admins
-  const [adminCompetitionIds, setAdminCompetitionIds] = useState<string[]>([]);
-
   const selectedCompetitionId = getSelectedCompetitionId();
 
   const resetRoles = () => {
     setIsGlobalAdmin(false);
     setIsCompetitionAdmin(false);
     setIsScorer(false);
-    setAdminCompetitionIds([]);
   };
 
   const fetchRoles = useCallback(async () => {
@@ -77,26 +64,53 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     try {
-      // ✅ GLOBAL ADMIN (via RPC, inte user_roles direkt)
-      const { data: isGlobal } = await supabase.rpc("is_global_admin");
-      setIsGlobalAdmin(!!isGlobal);
+      // ✅ global admin via rpc is_global_admin()
+      const { data: globalResult, error: globalErr } = await supabase.rpc(
+        "is_global_admin"
+      );
+      if (globalErr) {
+        console.warn("is_global_admin failed:", globalErr);
+        setIsGlobalAdmin(false);
+      } else {
+        setIsGlobalAdmin(!!globalResult);
+      }
 
-      // ✅ COMPETITION ADMIN för vald tävling (via RPC, inte select på competition_admins)
+      // ✅ tävlingsadmin för vald tävling via rpc is_competition_admin(p_competition_id)
       if (selectedCompetitionId) {
-        const { data: isCompAdmin } = await supabase.rpc(
-          "is_competition_admin",
-          { p_competition_id: selectedCompetitionId }
-        );
-        setIsCompetitionAdmin(!!isCompAdmin);
+        const { data: compAdminResult, error: compAdminErr } =
+          await supabase.rpc("is_competition_admin", {
+            p_competition_id: selectedCompetitionId,
+          });
+
+        if (compAdminErr) {
+          console.warn("is_competition_admin failed:", compAdminErr);
+          setIsCompetitionAdmin(false);
+        } else {
+          setIsCompetitionAdmin(!!compAdminResult);
+        }
       } else {
         setIsCompetitionAdmin(false);
       }
 
-      // ❌ INGA DIREKTA SELECTS PÅ scorer_permissions / competition_admins
-      // Här kan du senare lägga in en säker RPC, t.ex. is_any_scorer()
-      setIsScorer(false);
-      setAdminCompetitionIds([]); // tills du har en RPC som returnerar ids
+      // ✅ scorer-roll på vald tävling via rpc has_competition_role(p_competition_id,'scorer')
+      if (selectedCompetitionId) {
+        const { data: scorerResult, error: scorerErr } = await supabase.rpc(
+          "has_competition_role",
+          {
+            p_competition_id: selectedCompetitionId,
+            p_role: "scorer",
+          }
+        );
 
+        if (scorerErr) {
+          console.warn("has_competition_role(sc orer) failed:", scorerErr);
+          setIsScorer(false);
+        } else {
+          setIsScorer(!!scorerResult);
+        }
+      } else {
+        setIsScorer(false);
+      }
     } catch (e) {
       console.error("Auth role fetch failed", e);
       resetRoles();
@@ -121,8 +135,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(data.session);
       setUser(data.session?.user ?? null);
       setLoading(false);
-      if (data.session?.user) fetchRoles();
-      else resetRoles();
+      if (data.session?.user) {
+        fetchRoles();
+      } else {
+        resetRoles();
+      }
     });
 
     return () => subscription.unsubscribe();
@@ -155,16 +172,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     resetRoles();
   };
 
-  // Just nu: section används inte, men signaturen får ligga kvar
   const canScoreSection = (_section: ScoutSection) => {
+    // sektion används inte ännu, men behåller signaturen
     if (isGlobalAdmin || isCompetitionAdmin) return true;
     return isScorer;
   };
 
-  const isAdmin =
-    isGlobalAdmin ||
-    isCompetitionAdmin ||
-    adminCompetitionIds.length > 0;
+  const isAdmin = isGlobalAdmin || isCompetitionAdmin;
 
   return (
     <AuthContext.Provider
@@ -176,7 +190,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isCompetitionAdmin,
         isAdmin,
         isScorer,
-        adminCompetitionIds,
         selectedCompetitionId,
         canScoreSection,
         refreshRoles: fetchRoles,
