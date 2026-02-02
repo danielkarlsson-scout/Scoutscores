@@ -1,13 +1,15 @@
 import {
   createContext,
+  useCallback,
   useContext,
   useEffect,
+  useMemo,
+  useRef,
   useState,
-  ReactNode,
-  useCallback,
+  type ReactNode,
 } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import type { User, Session } from "@supabase/supabase-js";
+import type { Session, User } from "@supabase/supabase-js";
 import type { ScoutSection } from "@/types/competition";
 
 interface AuthContextType {
@@ -16,9 +18,9 @@ interface AuthContextType {
   loading: boolean;
 
   isGlobalAdmin: boolean;
-  isCompetitionAdmin: boolean;
+  isCompetitionAdmin: boolean; // scoped to selectedCompetitionId
   isAdmin: boolean;
-  isScorer: boolean;
+  isScorer: boolean; // scoped to selectedCompetitionId
 
   selectedCompetitionId: string | null;
 
@@ -32,9 +34,18 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-function getSelectedCompetitionId(): string | null {
+const AUTH_SELECTED_KEY = "selectedCompetitionId";
+
+/**
+ * NOTE:
+ * localStorage 'storage' event triggas inte i samma tab som gör setItem().
+ * Därför lyssnar vi även på ett custom event som CompetitionContext dispatchar.
+ */
+const SELECTED_EVENT = "selectedCompetitionIdChanged";
+
+function readSelectedCompetitionId(): string | null {
   try {
-    return localStorage.getItem("selectedCompetitionId");
+    return localStorage.getItem(AUTH_SELECTED_KEY);
   } catch {
     return null;
   }
@@ -45,118 +56,136 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const [selectedCompetitionId, setSelectedCompetitionId] = useState<string | null>(() =>
+    readSelectedCompetitionId()
+  );
+
   const [isGlobalAdmin, setIsGlobalAdmin] = useState(false);
   const [isCompetitionAdmin, setIsCompetitionAdmin] = useState(false);
   const [isScorer, setIsScorer] = useState(false);
 
-  const selectedCompetitionId = getSelectedCompetitionId();
+  // skydda mot request-storms (t.ex. dubbel-mount / snabba state-changes)
+  const rolesInFlightRef = useRef(false);
+  const lastRolesKeyRef = useRef<string>("");
 
-  const resetRoles = () => {
+  const resetRoleState = useCallback(() => {
     setIsGlobalAdmin(false);
     setIsCompetitionAdmin(false);
     setIsScorer(false);
-  };
+  }, []);
 
   const fetchRoles = useCallback(async () => {
+    const uid = user?.id ?? "";
+    const cid = selectedCompetitionId ?? "";
+    const key = `${uid}:${cid}`;
+
     if (!user) {
-      resetRoles();
+      resetRoleState();
       return;
     }
 
+    // undvik parallella körningar + spamma inte samma key
+    if (rolesInFlightRef.current) return;
+    if (lastRolesKeyRef.current === key) return;
+
+    rolesInFlightRef.current = true;
+    lastRolesKeyRef.current = key;
+
     try {
-      // ✅ global admin via rpc is_global_admin()
-      const { data: globalResult, error: globalErr } = await supabase.rpc(
-        "is_global_admin"
-      );
-      if (globalErr) {
-        console.warn("is_global_admin failed:", globalErr);
-        setIsGlobalAdmin(false);
-      } else {
-        setIsGlobalAdmin(!!globalResult);
-      }
+      // ✅ GLOBAL ADMIN (rpc)
+      const { data: isGlobal, error: globalErr } = await supabase.rpc("is_global_admin");
+      if (globalErr) throw globalErr;
+      setIsGlobalAdmin(!!isGlobal);
 
-      // ✅ tävlingsadmin för vald tävling via rpc is_competition_admin(p_competition_id)
+      // ✅ COMPETITION ADMIN (scoped to selectedCompetitionId)
       if (selectedCompetitionId) {
-        const { data: compAdminResult, error: compAdminErr } =
-          await supabase.rpc("is_competition_admin", {
-            p_competition_id: selectedCompetitionId,
-          });
+        const { data: isCompAdmin, error: compErr } = await supabase.rpc(
+          "is_competition_admin",
+          { p_competition_id: selectedCompetitionId }
+        );
+        if (compErr) throw compErr;
+        setIsCompetitionAdmin(!!isCompAdmin);
 
-        if (compAdminErr) {
-          console.warn("is_competition_admin failed:", compAdminErr);
-          setIsCompetitionAdmin(false);
-        } else {
-          setIsCompetitionAdmin(!!compAdminResult);
-        }
+        // ✅ SCORER (scoped) via rpc (RLS-safe)
+        const { data: isScorerData, error: scorerErr } = await supabase.rpc(
+          "has_competition_role",
+          { p_competition_id: selectedCompetitionId, p_role: "scorer" }
+        );
+        if (scorerErr) throw scorerErr;
+        setIsScorer(!!isScorerData);
       } else {
         setIsCompetitionAdmin(false);
-      }
-
-      // ✅ scorer-roll på vald tävling via rpc has_competition_role(p_competition_id,'scorer')
-      if (selectedCompetitionId) {
-        const { data: scorerResult, error: scorerErr } = await supabase.rpc(
-          "has_competition_role",
-          {
-            p_competition_id: selectedCompetitionId,
-            p_role: "scorer",
-          }
-        );
-
-        if (scorerErr) {
-          console.warn("has_competition_role(sc orer) failed:", scorerErr);
-          setIsScorer(false);
-        } else {
-          setIsScorer(!!scorerResult);
-        }
-      } else {
         setIsScorer(false);
       }
     } catch (e) {
-      console.error("Auth role fetch failed", e);
-      resetRoles();
+      console.error("Auth role fetch failed:", e);
+      resetRoleState();
+    } finally {
+      rolesInFlightRef.current = false;
     }
-  }, [user, selectedCompetitionId]);
+  }, [user, selectedCompetitionId, resetRoleState]);
 
+  // keep selectedCompetitionId synced (storage + custom event)
   useEffect(() => {
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_evt, s) => {
-      setSession(s);
-      setUser(s?.user ?? null);
-      setLoading(false);
-      if (s?.user) {
-        fetchRoles();
-      } else {
-        resetRoles();
-      }
-    });
+    const sync = () => setSelectedCompetitionId(readSelectedCompetitionId());
+
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === AUTH_SELECTED_KEY) sync();
+    };
+
+    const onCustom = () => sync();
+
+    window.addEventListener("storage", onStorage);
+    window.addEventListener(SELECTED_EVENT, onCustom as EventListener);
+
+    // initial sync (in case something set localStorage before provider mounts)
+    sync();
+
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener(SELECTED_EVENT, onCustom as EventListener);
+    };
+  }, []);
+
+  // auth session wiring
+  useEffect(() => {
+    const { data: { subscription } } =
+      supabase.auth.onAuthStateChange((_evt, s) => {
+        setSession(s);
+        setUser(s?.user ?? null);
+        setLoading(false);
+
+        // när session ändras, tvinga ny roll-fetch
+        lastRolesKeyRef.current = "";
+      });
 
     supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
       setUser(data.session?.user ?? null);
       setLoading(false);
-      if (data.session?.user) {
-        fetchRoles();
-      } else {
-        resetRoles();
-      }
+
+      lastRolesKeyRef.current = "";
     });
 
     return () => subscription.unsubscribe();
-  }, [fetchRoles]);
+  }, []);
 
-  const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+  // fetch roles when user/selectedCompetitionId changes
+  useEffect(() => {
+    if (user) fetchRoles();
+    else resetRoleState();
+  }, [user, selectedCompetitionId, fetchRoles, resetRoleState]);
+
+  const signIn = useCallback(async (email: string, password: string) => {
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
     return { error };
-  };
+  }, []);
 
-  const signUp = async (email: string, password: string) => {
-    const redirectTo = import.meta.env.PROD
-      ? "https://scoutscores.vercel.app/verify-email"
-      : "http://localhost:5173/verify-email";
+  const signUp = useCallback(async (email: string, password: string) => {
+    const redirectTo =
+      import.meta.env.PROD
+        ? "https://scoutscores.vercel.app/verify-email"
+        : "http://localhost:5173/verify-email";
 
     const { error } = await supabase.auth.signUp({
       email,
@@ -165,20 +194,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return { error };
-  };
+  }, []);
 
-  const signOut = async () => {
+  const signOut = useCallback(async () => {
     await supabase.auth.signOut();
-    resetRoles();
-  };
+    resetRoleState();
+  }, [resetRoleState]);
 
-  const canScoreSection = (_section: ScoutSection) => {
-    // sektion används inte ännu, men behåller signaturen
+  // just nu: om global/comp-admin => allt, annars scorer (scoped) => allt inom sin tävling
+  const canScoreSection = useCallback((_section: ScoutSection) => {
     if (isGlobalAdmin || isCompetitionAdmin) return true;
     return isScorer;
-  };
+  }, [isGlobalAdmin, isCompetitionAdmin, isScorer]);
 
-  const isAdmin = isGlobalAdmin || isCompetitionAdmin;
+  const isAdmin = useMemo(() => isGlobalAdmin || isCompetitionAdmin, [isGlobalAdmin, isCompetitionAdmin]);
 
   return (
     <AuthContext.Provider
