@@ -1,4 +1,4 @@
-export type ScoutSection = "sparare" | "upptackare" | "aventyrare" | "utmanare" | "rover";
+export type ScoutSection = "sparare" | "upptackare" | "aventyrare" | "utmanare";
 
 export const SCOUT_SECTIONS: Record<ScoutSection, { name: string; ageRange: string }> = {
   sparare: { name: "Spårare", ageRange: "8-9 år" },
