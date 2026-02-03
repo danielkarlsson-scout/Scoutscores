@@ -4,8 +4,8 @@ import React, {
   useContext,
   useEffect,
   useMemo,
-  useState,
   useRef,
+  useState,
 } from "react";
 import {
   Competition,
@@ -20,6 +20,7 @@ import {
 } from "@/types/competition";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
+import { SCOUT_SECTIONS } from "@/types/competition";
 
 type SaveState = "idle" | "saving" | "saved" | "error";
 
@@ -72,6 +73,10 @@ interface CompetitionContextType {
   getStationScores: (stationId: string) => Array<{ patrol: Patrol; score: number }>;
   getScoutGroupName: (groupId: string) => string | undefined;
 
+  // används av poängsättning/UI
+  isStationAllowedForSection: (station: Station, section: ScoutSection) => boolean;
+  getStationsForSection: (section?: ScoutSection) => Station[];
+
   updateCompetition: (updates: Partial<Competition>) => void;
 }
 
@@ -80,7 +85,19 @@ const CompetitionContext = createContext<CompetitionContextType | undefined>(und
 const SELECTED_KEY = "scout-selected-competition";
 const AUTH_SELECTED_KEY = "selectedCompetitionId";
 
-const scoreKey = (patrolId: string, stationId: string) => `${patrolId}:${stationId}`;
+// --- helpers för allowed_sections ("alla" = full array) ---
+const ALL_SECTION_KEYS = Object.keys(SCOUT_SECTIONS);
+
+/**
+ * Normaliserar allowedSections till en *array* med stabil ordning.
+ * - null/undefined/ogiltigt => ALL_SECTION_KEYS
+ * - array => filtrera till kända keys + stabil ordning
+ */
+function normalizeAllowedSectionsToArray(v: unknown): string[] {
+  if (!Array.isArray(v) || v.length === 0) return [...ALL_SECTION_KEYS];
+  const set = new Set(v.map(String));
+  return ALL_SECTION_KEYS.filter((k) => set.has(k));
+}
 
 function mapDbCompetition(row: any): Competition {
   const status: CompetitionStatus = row.is_active ? "active" : "closed";
@@ -99,13 +116,14 @@ function mapDbCompetition(row: any): Competition {
 }
 
 function mapDbStation(row: any): Station {
+  const allowedSections = normalizeAllowedSectionsToArray(row.allowed_sections);
   return {
     id: row.id,
     name: row.name,
     description: row.description ?? "",
     maxScore: row.max_score ?? row.maxScore ?? 0,
     leaderEmail: row.leader_email ?? undefined,
-    allowedSections: row.allowed_sections ?? undefined,
+    allowedSections: allowedSections as any,
     createdAt: row.created_at ?? new Date().toISOString(),
   };
 }
@@ -150,11 +168,7 @@ function mapDbTemplate(row: any): ScoutGroupTemplate {
 
 function readSelectedCompetitionId(): string | null {
   try {
-    return (
-      localStorage.getItem(AUTH_SELECTED_KEY) ||
-      localStorage.getItem(SELECTED_KEY) ||
-      null
-    );
+    return localStorage.getItem(AUTH_SELECTED_KEY) || localStorage.getItem(SELECTED_KEY) || null;
   } catch {
     return null;
   }
@@ -169,64 +183,81 @@ function writeSelectedCompetitionId(id: string | null) {
       localStorage.removeItem(SELECTED_KEY);
       localStorage.removeItem(AUTH_SELECTED_KEY);
     }
-
-    // NOTE: "storage" triggas inte i samma tab som gör setItem()
-    window.dispatchEvent(new Event("selectedCompetitionIdChanged"));
   } catch {
     // ignore
   }
 }
 
+function scoreKey(patrolId: string, stationId: string) {
+  return `${patrolId}__${stationId}`;
+}
+
+type UserCompetitionRoleRow = { competition_id: string; role: string };
+
 export function CompetitionProvider({ children }: { children: React.ReactNode }) {
   const { user, isGlobalAdmin } = useAuth();
 
-  const [adminCompetitionIds, setAdminCompetitionIds] = useState<string[]>([]);
-  // scorerCompetitionIds state declared above
-  const isAnyCompetitionAdmin = adminCompetitionIds.length > 0;
-
   const [competitions, setCompetitions] = useState<Competition[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(() => readSelectedCompetitionId());
+
+  const [adminCompetitionIds, setAdminCompetitionIds] = useState<string[]>([]);
+  const [scorerCompetitionIds, setScorerCompetitionIds] = useState<string[]>([]);
   const [scoutGroupTemplates, setScoutGroupTemplates] = useState<ScoutGroupTemplate[]>([]);
 
   const [scoreOverrides, setScoreOverrides] = useState<Map<string, number>>(new Map());
   const [scoreSaveState, setScoreSaveState] = useState<Map<string, SaveState>>(new Map());
   const [pendingRetry, setPendingRetry] = useState<
-  const refreshAllInFlightRef = useRef(false);
-  const refreshAllLastKeyRef = useRef<string>("");
     Map<string, { patrolId: string; stationId: string; score: number }>
   >(new Map());
+
+  // ✅ För att inte “nollställa” vald tävling vid refresh innan data/roller är laddade
+  const [rolesLoaded, setRolesLoaded] = useState(false);
+  const [compsLoaded, setCompsLoaded] = useState(false);
+
+  const refreshAllInFlightRef = useRef(false);
+  const refreshAllLastKeyRef = useRef<string>("");
 
   const competition = useMemo(
     () => competitions.find((c) => c.id === selectedId) ?? null,
     [competitions, selectedId]
   );
+  const activeCompetitions = useMemo(() => competitions.filter((c) => c.status === "active"), [competitions]);
+  const archivedCompetitions = useMemo(() => competitions.filter((c) => c.status === "closed"), [competitions]);
 
-  const activeCompetitions = useMemo(
-    () => competitions.filter((c) => c.status === "active"),
-    [competitions]
-  );
+  const isAnyCompetitionAdmin = adminCompetitionIds.length > 0;
 
-  const archivedCompetitions = useMemo(
-    () => competitions.filter((c) => c.status === "closed"),
-    [competitions]
-  );
+  const allowedCompetitionIds = useMemo(() => {
+    if (isGlobalAdmin) return competitions.map((c) => c.id);
+    if (isAnyCompetitionAdmin) return adminCompetitionIds.map(String);
+    return scorerCompetitionIds.map(String);
+  }, [isGlobalAdmin, isAnyCompetitionAdmin, adminCompetitionIds, scorerCompetitionIds, competitions]);
 
-  // RLS ska redan begränsa vilka competitions du ser.
-  // Global admin: ser alla. Admin/scorer: ser de de har access till.
-  const allowedCompetitionIds = useMemo(
-    () => competitions.map((c) => c.id),
-    [competitions]
-  );
+  const selectableCompetitions = useMemo(() => {
+    if (isGlobalAdmin) return activeCompetitions;
 
-  // UI: låt användaren välja bland aktiva som de ser via RLS
-  const selectableCompetitions = useMemo(() => activeCompetitions, [activeCompetitions]);
+    if (isAnyCompetitionAdmin) {
+      const allowed = new Set(adminCompetitionIds.map(String));
+      return activeCompetitions.filter((c) => allowed.has(c.id));
+    }
+
+    const allowed = new Set(scorerCompetitionIds.map(String));
+    return activeCompetitions.filter((c) => allowed.has(c.id));
+  }, [isGlobalAdmin, isAnyCompetitionAdmin, adminCompetitionIds, scorerCompetitionIds, activeCompetitions]);
 
   const canSelectCompetition = useCallback(
     (competitionId: string) => {
-      // får bara välja sådant vi faktiskt ser
-      return selectableCompetitions.some((c) => c.id === competitionId);
+      if (isGlobalAdmin) return true;
+
+      if (isAnyCompetitionAdmin) {
+        return adminCompetitionIds.map(String).includes(String(competitionId));
+      }
+
+      return (
+        scorerCompetitionIds.map(String).includes(String(competitionId)) &&
+        activeCompetitions.some((c) => c.id === competitionId)
+      );
     },
-    [selectableCompetitions]
+    [isGlobalAdmin, isAnyCompetitionAdmin, adminCompetitionIds, scorerCompetitionIds, activeCompetitions]
   );
 
   const stations = competition?.stations ?? [];
@@ -234,12 +265,14 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   const scores = competition?.scores ?? [];
   const scoutGroups = competition?.scoutGroups ?? [];
 
-  // persist selection (sync to both keys)
+  // Persist vald tävling till localStorage
   useEffect(() => {
+    // Undvik att skriva över localStorage under auth-hydrering (selectedId kan bli null temporärt)
+    if (!selectedId && !isGlobalAdmin && !user?.id) return;
     writeSelectedCompetitionId(selectedId);
-  }, [selectedId]);
+  }, [selectedId, isGlobalAdmin, user?.id]);
 
-  // keep in sync if something else updates localStorage
+  // Synka om flera tabs
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key === SELECTED_KEY || e.key === AUTH_SELECTED_KEY) {
@@ -247,162 +280,214 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
         setSelectedId(v);
       }
     };
-
-    const onCustom = () => {
-      const v = readSelectedCompetitionId();
-      setSelectedId(v);
-    };
-
-    window.addEventListener("selectedCompetitionIdChanged", onCustom as EventListener);
     window.addEventListener("storage", onStorage);
-    return () => {
-      window.removeEventListener("storage", onStorage);
-      window.removeEventListener("selectedCompetitionIdChanged", onCustom as EventListener);
-    };
-  }, [refreshAll, refreshTemplates]);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
-  // admin-anywhere via RPC (ingen select mot competition_admins)
-  // (removed) is_any_competition_admin rpc - using user_competition_roles instead
+  const refreshCompetitionRoles = useCallback(async () => {
+    if (!user?.id) {
+      // Vänta tills auth har laddat klart (annars riskerar vi att nolla selectedId och skriva över localStorage)
+      setAdminCompetitionIds([]);
+      setScorerCompetitionIds([]);
+      setRolesLoaded(false);
+      return;
+    }
 
-  // Auto-select / validate selection
+    const { data, error } = await supabase
+      .from("user_competition_roles")
+      .select("competition_id,role")
+      .eq("user_id", user.id);
+
+    if (error) {
+      console.error("Failed to load user_competition_roles:", error);
+      setAdminCompetitionIds([]);
+      setScorerCompetitionIds([]);
+      setRolesLoaded(true);
+      return;
+    }
+
+    const rows = (data ?? []) as UserCompetitionRoleRow[];
+    setAdminCompetitionIds(rows.filter((r) => String(r.role) === "admin").map((r) => String(r.competition_id)));
+    setScorerCompetitionIds(rows.filter((r) => String(r.role) === "scorer").map((r) => String(r.competition_id)));
+    setRolesLoaded(true);
+  }, [user?.id]);
+
+  /**
+   * ✅ Viktig fix för “vald tävling ligger kvar vid refresh”
+   * Tidigare kunde den här effekten köra innan roller/competitions var laddade,
+   * vilket gjorde att selectedId blev null/överskriven. Nu väntar vi tills både
+   * roller och tävlingar är laddade.
+   */
   useEffect(() => {
-    // Om vi inte har något val ännu: välj första aktiva vi kan se
-    if (!selectedId) {
-      if (selectableCompetitions.length > 0) setSelectedId(selectableCompetitions[0].id);
+    if (!rolesLoaded || !compsLoaded) return;
+
+    // Om användaren inte är inloggad ännu (auth hydrering), rör inte selectedId.
+    if (!isGlobalAdmin && !user?.id) return;
+
+    // Respektera alltid sparad vald tävling om den fortfarande är "tillåten"
+    if (selectedId) {
+      const selectedComp = competitions.find((c) => c.id === selectedId);
+      const isAllowedForUser =
+        !!selectedComp &&
+        (isGlobalAdmin ||
+          adminCompetitionIds.map(String).includes(String(selectedId)) ||
+          (scorerCompetitionIds.map(String).includes(String(selectedId)) && selectedComp.status === "active"));
+
+      if (isAllowedForUser) return;
+    }
+
+    // Annars: välj “första rimliga” baserat på roll
+    if (isGlobalAdmin) {
+      if (activeCompetitions.length > 0) setSelectedId(activeCompetitions[0].id);
+      else if (archivedCompetitions.length > 0) setSelectedId(archivedCompetitions[0].id);
       else setSelectedId(null);
       return;
     }
 
-    // Om selection inte längre finns i listan vi ser: välj om
-    if (!competitions.some((c) => c.id === selectedId)) {
-      if (selectableCompetitions.length > 0) setSelectedId(selectableCompetitions[0].id);
-      else setSelectedId(null);
+    if (isAnyCompetitionAdmin) {
+      const allowed = new Set(adminCompetitionIds.map(String));
+      const allowedList = competitions.filter((c) => allowed.has(c.id));
+      if (allowedList.length === 0) {
+        setSelectedId(null);
+        return;
+      }
+      const firstActive = allowedList.find((c) => c.status === "active");
+      setSelectedId(firstActive?.id ?? allowedList[0].id);
+      return;
     }
-  }, [selectedId, competitions, selectableCompetitions]);
+
+    if (selectableCompetitions.length === 0) {
+      setSelectedId(null);
+      return;
+    }
+
+    setSelectedId(selectableCompetitions[0].id);
+  }, [
+    rolesLoaded,
+    compsLoaded,
+    isGlobalAdmin,
+    user?.id,
+    competitions,
+    activeCompetitions,
+    archivedCompetitions,
+    isAnyCompetitionAdmin,
+    adminCompetitionIds,
+    scorerCompetitionIds,
+    selectableCompetitions,
+    selectedId,
+  ]);
+
 
   const refreshAll = useCallback(async () => {
-    const key = `${user?.id ?? ""}:${isGlobalAdmin ? "global" : "scoped"}`;
     if (refreshAllInFlightRef.current) return;
-    if (refreshAllLastKeyRef.current === key) return;
     refreshAllInFlightRef.current = true;
+
+    const key = `${user?.id ?? "anon"}-${isGlobalAdmin}-${adminCompetitionIds.join(",")}-${scorerCompetitionIds.join(",")}`;
     refreshAllLastKeyRef.current = key;
 
-    // 0) ladda tävlingsroller (admin/scorer) från user_competition_roles (RLS-safe för egna rader)
-    let adminIds: string[] = [];
-    let scorerIds: string[] = [];
-    if (user?.id && !isGlobalAdmin) {
-      const { data: roleRows, error: roleErr } = await supabase
-        .from("user_competition_roles")
-        .select("competition_id, role")
-        .eq("user_id", user.id);
-
-      if (roleErr) {
-        console.error("Failed to load user_competition_roles:", roleErr);
-      } else {
-        adminIds = (roleRows ?? []).filter((r: any) => String(r.role) === "admin").map((r: any) => String(r.competition_id));
-        scorerIds = (roleRows ?? []).filter((r: any) => String(r.role) === "scorer").map((r: any) => String(r.competition_id));
-      }
-    }
-    setAdminCompetitionIds(adminIds);
-    setScorerCompetitionIds(scorerIds);
-
     try {
-    // 1) competitions (RLS ska redan begränsa)
-    const { data: comps, error: compsErr } = await supabase
-      .from("competitions")
-      .select("id,name,date,is_active,created_at,closed_at")
-      .order("created_at", { ascending: false });
+      const { data: comps, error: compsErr } = await supabase
+        .from("competitions")
+        .select("id,name,date,is_active,created_at,closed_at")
+        .order("created_at", { ascending: false });
 
-    if (compsErr) {
-      console.error("Failed to load competitions:", compsErr);
-      setCompetitions([]);
-      return;
-    }
+      if (compsErr) {
+        console.error("Failed to load competitions:", compsErr);
+        setCompetitions([]);
+        setCompsLoaded(true);
+        return;
+      }
 
-    const mapped = (comps ?? []).map(mapDbCompetition);
+      const mapped = (comps ?? []).map(mapDbCompetition);
 
-    // För scorers: vi laddar bara relaterad data för aktiva tävlingar
-    // För admin/global admin: vi kan ladda för allt vi ser
-    const idsToFetch =
-      isGlobalAdmin || isAnyCompetitionAdmin
-        ? mapped.map((c) => c.id)
-        : mapped.filter((c) => c.status === "active").map((c) => c.id);
+      // Bestäm vilka competitions vi ska hämta “child data” för
+      let idsToFetch: string[] = [];
+      if (isGlobalAdmin) {
+        idsToFetch = mapped.map((c) => c.id);
+      } else if (adminCompetitionIds.length > 0) {
+        const allowed = new Set(adminCompetitionIds.map(String));
+        idsToFetch = mapped.filter((c) => allowed.has(c.id)).map((c) => c.id);
+      } else {
+        const allowed = new Set(scorerCompetitionIds.map(String));
+        idsToFetch = mapped.filter((c) => c.status === "active" && allowed.has(c.id)).map((c) => c.id);
+      }
 
-    // Always set base competitions list (så UI inte dör)
-    if (idsToFetch.length === 0) {
       setCompetitions(mapped);
-      return;
-    }
+      setCompsLoaded(true);
 
-    const [stationsRes, patrolsRes, scoresRes, groupsRes] = await Promise.all([
-      supabase
-        .from("stations")
-        .select("id,competition_id,name,description,max_score,leader_email,allowed_sections,created_at")
-        .in("competition_id", idsToFetch),
-      supabase
-        .from("patrols")
-        .select("id,competition_id,name,section,scout_group_id,members,created_at")
-        .in("competition_id", idsToFetch),
-      supabase
-        .from("scores")
-        .select("id,competition_id,patrol_id,station_id,score,updated_at")
-        .in("competition_id", idsToFetch),
-      supabase
-        .from("scout_groups")
-        .select("id,competition_id,name,created_at")
-        .in("competition_id", idsToFetch),
-    ]);
+      if (idsToFetch.length === 0) return;
 
-    if (stationsRes.error) console.error("Failed to load stations:", stationsRes.error);
-    if (patrolsRes.error) console.error("Failed to load patrols:", patrolsRes.error);
-    if (scoresRes.error) console.error("Failed to load scores:", scoresRes.error);
-    if (groupsRes.error) console.error("Failed to load scout_groups:", groupsRes.error);
+      const [stationsRes, patrolsRes, scoresRes, groupsRes] = await Promise.all([
+        supabase
+          .from("stations")
+          .select("id,competition_id,name,description,max_score,leader_email,allowed_sections,created_at")
+          .in("competition_id", idsToFetch),
+        supabase
+          .from("patrols")
+          .select("id,competition_id,name,section,scout_group_id,members,created_at")
+          .in("competition_id", idsToFetch),
+        supabase
+          .from("scores")
+          .select("id,competition_id,patrol_id,station_id,score,updated_at")
+          .in("competition_id", idsToFetch),
+        supabase
+          .from("scout_groups")
+          .select("id,competition_id,name,created_at")
+          .in("competition_id", idsToFetch),
+      ]);
 
-    const stationsByComp = new Map<string, Station[]>();
-    for (const row of stationsRes.data ?? []) {
-      const cid = (row as any).competition_id;
-      const arr = stationsByComp.get(cid) ?? [];
-      arr.push(mapDbStation(row));
-      stationsByComp.set(cid, arr);
-    }
+      if (stationsRes.error) console.error("Failed to load stations:", stationsRes.error);
+      if (patrolsRes.error) console.error("Failed to load patrols:", patrolsRes.error);
+      if (scoresRes.error) console.error("Failed to load scores:", scoresRes.error);
+      if (groupsRes.error) console.error("Failed to load scout_groups:", groupsRes.error);
 
-    const patrolsByComp = new Map<string, Patrol[]>();
-    for (const row of patrolsRes.data ?? []) {
-      const cid = (row as any).competition_id;
-      const arr = patrolsByComp.get(cid) ?? [];
-      arr.push(mapDbPatrol(row));
-      patrolsByComp.set(cid, arr);
-    }
+      const stationsByComp = new Map<string, Station[]>();
+      for (const row of stationsRes.data ?? []) {
+        const cid = (row as any).competition_id;
+        const arr = stationsByComp.get(cid) ?? [];
+        arr.push(mapDbStation(row));
+        stationsByComp.set(cid, arr);
+      }
 
-    const scoresByComp = new Map<string, Score[]>();
-    for (const row of scoresRes.data ?? []) {
-      const cid = (row as any).competition_id;
-      const arr = scoresByComp.get(cid) ?? [];
-      arr.push(mapDbScore(row));
-      scoresByComp.set(cid, arr);
-    }
+      const patrolsByComp = new Map<string, Patrol[]>();
+      for (const row of patrolsRes.data ?? []) {
+        const cid = (row as any).competition_id;
+        const arr = patrolsByComp.get(cid) ?? [];
+        arr.push(mapDbPatrol(row));
+        patrolsByComp.set(cid, arr);
+      }
 
-    const groupsByComp = new Map<string, ScoutGroup[]>();
-    for (const row of groupsRes.data ?? []) {
-      const cid = (row as any).competition_id;
-      const arr = groupsByComp.get(cid) ?? [];
-      arr.push(mapDbScoutGroup(row));
-      groupsByComp.set(cid, arr);
-    }
+      const scoresByComp = new Map<string, Score[]>();
+      for (const row of scoresRes.data ?? []) {
+        const cid = (row as any).competition_id;
+        const arr = scoresByComp.get(cid) ?? [];
+        arr.push(mapDbScore(row));
+        scoresByComp.set(cid, arr);
+      }
 
-    const merged = mapped.map((c) => ({
-      ...c,
-      stations: stationsByComp.get(c.id) ?? [],
-      patrols: patrolsByComp.get(c.id) ?? [],
-      scores: scoresByComp.get(c.id) ?? [],
-      scoutGroups: groupsByComp.get(c.id) ?? [],
-    }));
+      const groupsByComp = new Map<string, ScoutGroup[]>();
+      for (const row of groupsRes.data ?? []) {
+        const cid = (row as any).competition_id;
+        const arr = groupsByComp.get(cid) ?? [];
+        arr.push(mapDbScoutGroup(row));
+        groupsByComp.set(cid, arr);
+      }
 
-    setCompetitions(merged);
+      const merged = mapped.map((c) => ({
+        ...c,
+        stations: stationsByComp.get(c.id) ?? [],
+        patrols: patrolsByComp.get(c.id) ?? [],
+        scores: scoresByComp.get(c.id) ?? [],
+        scoutGroups: groupsByComp.get(c.id) ?? [],
+      }));
+
+      if (refreshAllLastKeyRef.current === key) {
+        setCompetitions(merged);
+      }
     } finally {
       refreshAllInFlightRef.current = false;
     }
-  }, [isGlobalAdmin, isAnyCompetitionAdmin]);
+  }, [user?.id, isGlobalAdmin, adminCompetitionIds, scorerCompetitionIds]);
 
   const refreshTemplates = useCallback(async () => {
     const { data, error } = await supabase
@@ -417,26 +502,35 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     }
 
     setScoutGroupTemplates((data ?? []).map(mapDbTemplate));
-  }, [refreshAll, refreshTemplates]);
+  }, []);
 
   useEffect(() => {
-  let cancelled = false;
+    setRolesLoaded(false);
+    refreshCompetitionRoles();
+  }, [refreshCompetitionRoles]);
 
-  const run = async () => {
-    try {
-      await refreshAll();
-      await refreshTemplates();
-    } catch (e) {
-      console.error("Initial data load failed", e);
-    }
-  };
+  useEffect(() => {
+    setCompsLoaded(false);
+    refreshAll();
+    refreshTemplates();
+  }, [refreshAll, refreshTemplates]);
 
-  run();
+  // -------------------------
+  // section-filter helpers
+  // -------------------------
+  const isStationAllowedForSection = useCallback((station: Station, section: ScoutSection) => {
+    const allowed = normalizeAllowedSectionsToArray((station as any).allowedSections);
+    return allowed.includes(String(section));
+  }, []);
 
-  return () => {
-    cancelled = true;
-  };
-}, []); // 👈 VIKTIGT: tom dependency-array
+  const getStationsForSection = useCallback(
+    (section?: ScoutSection) => {
+      if (!section) return stations;
+      return stations.filter((s) => isStationAllowedForSection(s, section));
+    },
+    [stations, isStationAllowedForSection]
+  );
+
   // -------------------------
   // competitions
   // -------------------------
@@ -458,21 +552,21 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
         throw error ?? new Error("Failed to create competition");
       }
 
-      // Viktigt: INGEN klient-insert i competition_admins här.
-      // Din DB-trigger (add_creator_as_competition_admin) ska hantera detta.
-
       const newComp = mapDbCompetition(dbComp);
       setCompetitions((prev) => [newComp, ...prev]);
       setSelectedId(newComp.id);
 
+      refreshCompetitionRoles();
       return newComp;
     },
-    []
+    [refreshCompetitionRoles]
   );
 
   const selectCompetition = useCallback(
     (id: string) => {
-      if (canSelectCompetition(id)) setSelectedId(id);
+      if (canSelectCompetition(id)) {
+        setSelectedId(id);
+      }
     },
     [canSelectCompetition]
   );
@@ -491,9 +585,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
         return;
       }
 
-      setCompetitions((prev) =>
-        prev.map((c) => (c.id === id ? { ...c, status: "closed", closedAt } : c))
-      );
+      setCompetitions((prev) => prev.map((c) => (c.id === id ? { ...c, status: "closed", closedAt } : c)));
 
       if (id === selectedId) {
         const nextSelectable = selectableCompetitions.filter((c) => c.id !== id);
@@ -504,20 +596,15 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
   );
 
   const reopenCompetition = useCallback(async (id: string) => {
-    const { error } = await supabase
-      .from("competitions")
-      .update({ is_active: true, closed_at: null })
-      .eq("id", id);
+    const { error } = await supabase.from("competitions").update({ is_active: true, closed_at: null }).eq("id", id);
 
     if (error) {
       console.error("Failed to reopen competition:", error);
       return;
     }
 
-    setCompetitions((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, status: "active", closedAt: undefined } : c))
-    );
-  }, [refreshAll, refreshTemplates]);
+    setCompetitions((prev) => prev.map((c) => (c.id === id ? { ...c, status: "active", closedAt: undefined } : c)));
+  }, []);
 
   const deleteCompetition = useCallback(
     async (id: string) => {
@@ -545,7 +632,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       const { error } = await supabase.from("competitions").update(patch).eq("id", id);
       if (error) console.error("Failed to update competition:", error);
     })();
-  }, [refreshAll, refreshTemplates]);
+  }, []);
 
   const updateCompetition = useCallback(
     (updates: Partial<Competition>) => {
@@ -562,6 +649,8 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
     async (station: Omit<Station, "id" | "createdAt">) => {
       if (!selectedId) return;
 
+      const allowed_sections = normalizeAllowedSectionsToArray((station as any).allowedSections);
+
       const { data, error } = await supabase
         .from("stations")
         .insert({
@@ -570,7 +659,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
           description: station.description,
           max_score: station.maxScore,
           leader_email: station.leaderEmail ?? null,
-          allowed_sections: station.allowedSections ?? null,
+          allowed_sections,
         })
         .select("id,competition_id,name,description,max_score,leader_email,allowed_sections,created_at")
         .single();
@@ -582,9 +671,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
       const newStation = mapDbStation(data);
       setCompetitions((prev) =>
-        prev.map((c) =>
-          c.id === selectedId ? { ...c, stations: [...c.stations, newStation] } : c
-        )
+        prev.map((c) => (c.id === selectedId ? { ...c, stations: [...c.stations, newStation] } : c))
       );
     },
     [selectedId]
@@ -599,7 +686,11 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       if (typeof updates.description === "string") patch.description = updates.description;
       if (typeof updates.maxScore === "number") patch.max_score = updates.maxScore;
       if (typeof updates.leaderEmail === "string") patch.leader_email = updates.leaderEmail;
-      if (Array.isArray(updates.allowedSections)) patch.allowed_sections = updates.allowedSections;
+
+      // om allowedSections finns med i updates (även om null) så uppdatera DB
+      if ("allowedSections" in (updates as any)) {
+        patch.allowed_sections = normalizeAllowedSectionsToArray((updates as any).allowedSections);
+      }
 
       const { error } = await supabase.from("stations").update(patch).eq("id", id);
 
@@ -608,10 +699,15 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
         return;
       }
 
+      const nextUpdates: Partial<Station> = { ...updates };
+      if ("allowedSections" in (updates as any)) {
+        (nextUpdates as any).allowedSections = normalizeAllowedSectionsToArray((updates as any).allowedSections);
+      }
+
       setCompetitions((prev) =>
         prev.map((c) =>
           c.id === selectedId
-            ? { ...c, stations: c.stations.map((s) => (s.id === id ? { ...s, ...updates } : s)) }
+            ? { ...c, stations: c.stations.map((s) => (s.id === id ? { ...s, ...nextUpdates } : s)) }
             : c
         )
       );
@@ -657,8 +753,8 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
           competition_id: selectedId,
           name: patrol.name,
           section: patrol.section,
-          scout_group_id: patrol.scoutGroupId ?? null,
-          members: patrol.members ?? null,
+          scout_group_id: (patrol as any).scoutGroupId ?? null,
+          members: (patrol as any).members ?? null,
         })
         .select("id,competition_id,name,section,scout_group_id,members,created_at")
         .single();
@@ -683,8 +779,8 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       const patch: any = {};
       if (typeof updates.name === "string") patch.name = updates.name;
       if (typeof updates.section === "string") patch.section = updates.section;
-      if ("scoutGroupId" in updates) patch.scout_group_id = updates.scoutGroupId ?? null;
-      if ("members" in updates) patch.members = updates.members ?? null;
+      if ("scoutGroupId" in updates) patch.scout_group_id = (updates as any).scoutGroupId ?? null;
+      if ("members" in updates) patch.members = (updates as any).members ?? null;
 
       const { error } = await supabase.from("patrols").update(patch).eq("id", id);
       if (error) {
@@ -749,11 +845,8 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       }
 
       const newGroup = mapDbScoutGroup(data);
-
       setCompetitions((prev) =>
-        prev.map((c) =>
-          c.id === selectedId ? { ...c, scoutGroups: [...c.scoutGroups, newGroup] } : c
-        )
+        prev.map((c) => (c.id === selectedId ? { ...c, scoutGroups: [...c.scoutGroups, newGroup] } : c))
       );
     },
     [selectedId]
@@ -797,7 +890,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
             ? {
                 ...c,
                 scoutGroups: c.scoutGroups.filter((g) => g.id !== id),
-                patrols: c.patrols.map((p) => (p.scoutGroupId === id ? { ...p, scoutGroupId: undefined } : p)),
+                patrols: c.patrols.map((p) => ((p as any).scoutGroupId === id ? { ...p, scoutGroupId: undefined } : p)),
               }
             : c
         )
@@ -840,7 +933,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       return;
     }
     setScoutGroupTemplates((prev) => prev.filter((t) => t.id !== id));
-  }, [refreshAll, refreshTemplates]);
+  }, []);
 
   const importScoutGroupsFromTemplate = useCallback(
     async (templateId: string) => {
@@ -866,11 +959,8 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
       }
 
       const newGroups = (data ?? []).map(mapDbScoutGroup);
-
       setCompetitions((prev) =>
-        prev.map((c) =>
-          c.id === selectedId ? { ...c, scoutGroups: [...c.scoutGroups, ...newGroups] } : c
-        )
+        prev.map((c) => (c.id === selectedId ? { ...c, scoutGroups: [...c.scoutGroups, ...newGroups] } : c))
       );
     },
     [selectedId, scoutGroupTemplates, scoutGroups]
@@ -904,6 +994,7 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
       const key = scoreKey(patrolId, stationId);
 
+      // Optimistic UI
       setCompetitions((prev) =>
         prev.map((c) => {
           if (c.id !== selectedId) return c;
@@ -933,18 +1024,16 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
 
       setScoreSaveState((prev) => new Map(prev).set(key, "saving"));
 
-      const { error } = await supabase
-        .from("scores")
-        .upsert(
-          {
-            competition_id: selectedId,
-            patrol_id: patrolId,
-            station_id: stationId,
-            score,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "competition_id,patrol_id,station_id" }
-        );
+      const { error } = await supabase.from("scores").upsert(
+        {
+          competition_id: selectedId,
+          patrol_id: patrolId,
+          station_id: stationId,
+          score,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "competition_id,patrol_id,station_id" }
+      );
 
       if (error) {
         console.error("Failed to save score:", error);
@@ -1090,6 +1179,9 @@ export function CompetitionProvider({ children }: { children: React.ReactNode })
         getPatrolsWithScores,
         getStationScores,
         getScoutGroupName,
+
+        isStationAllowedForSection,
+        getStationsForSection,
 
         updateCompetition,
       }}
