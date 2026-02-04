@@ -1,3 +1,4 @@
+import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { 
@@ -14,8 +15,7 @@ import {
   Shield,
   LogOut
 } from 'lucide-react';
-import { useState } from 'react';
-import { Button } from '@/components/ui/button';
+
 import { useCompetition } from '@/contexts/CompetitionContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { Badge } from '@/components/ui/badge';
@@ -30,34 +30,41 @@ import {
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const { competition, scorerActiveCompetitions, selectCompetition, canSelectCompetition } = useCompetition();
+
+  const {
+    competition,
+    scorerActiveCompetitions,
+    selectCompetition,
+    canSelectCompetition,
+  } = useCompetition();
+
   const { user, isGlobalAdmin, isCompetitionAdmin, isScorer, signOut } = useAuth();
   const isAdmin = isGlobalAdmin || isCompetitionAdmin;
 
-  // Define nav items based on role
-  const getNavItems = () => {
-    // Scorers only see the scoring page
-    if (isScorer && !isAdmin) {
-      return [
-        { path: '/scoring', label: 'Poäng', icon: ClipboardList },
-      ];
-    }
+  const handleNavClick = () => {
+    setMobileMenuOpen(false);
+  };
 
-    // Admins see everything
+  const getNavItems = () => {
+    if (!user) return [];
+
     if (isAdmin) {
       return [
-        { path: '/competitions', label: 'Tävlingar', icon: FolderOpen },
-        { path: '/', label: 'Översikt', icon: LayoutDashboard },
-        { path: '/stations', label: 'Stationer', icon: Flag },
-        { path: '/scout-groups', label: 'Kårer', icon: Building2 },
+        { path: '/dashboard', label: 'Översikt', icon: LayoutDashboard },
+        { path: '/competitions', label: 'Tävlingar', icon: Flag },
         { path: '/patrols', label: 'Patruller', icon: Users },
-        { path: '/scoring', label: 'Poäng', icon: ClipboardList },
+        { path: '/stations', label: 'Stationer', icon: ClipboardList },
         { path: '/scoreboard', label: 'Resultattavla', icon: Trophy },
-        { path: '/admin', label: 'Admin', icon: Shield },
       ];
     }
 
-    // Users without roles see nothing (they'll be shown AwaitingAccess page)
+    if (isScorer) {
+      return [
+        { path: '/scoring', label: 'Poängregistrering', icon: ClipboardList },
+        { path: '/scoreboard', label: 'Resultattavla', icon: Trophy },
+      ];
+    }
+
     return [];
   };
 
@@ -66,6 +73,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const handleSignOut = async () => {
     await signOut();
   };
+
+  const scorerComps = scorerActiveCompetitions ?? [];
 
   return (
     <div className="min-h-screen bg-background">
@@ -78,7 +87,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           </Link>
 
           {/* Current Competition / Selector */}
-          {(competition || (isScorer && !isAdmin && scorerActiveCompetitions.length > 0)) && (
+          {(competition || (isScorer && !isAdmin && scorerComps.length > 0)) && (
             <div className="hidden lg:block">
               {isAdmin || !isScorer ? (
                 <Link to={isAdmin ? "/competitions" : "/"}>
@@ -101,120 +110,126 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                     </Badge>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="center" className="min-w-64">
-                    {scorerActiveCompetitions.map((c) => (
+                    {scorerComps.map((c) => (
                       <DropdownMenuItem
                         key={c.id}
-                        onSelect={() => {
-                          if (canSelectCompetition(c.id)) selectCompetition(c.id);
+                        onClick={() => {
+                          if (canSelectCompetition(c.id)) {
+                            selectCompetition(c.id);
+                          }
                         }}
-                        className="flex items-center justify-between"
                       >
-                        <span className="truncate">{c.name}</span>
-                        {c.id === competition?.id ? <span className="text-xs text-muted-foreground">Vald</span> : null}
+                        <div className="flex flex-col gap-1">
+                          <span className="font-medium">{c.name}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {c.date
+                              ? new Date(c.date).toLocaleDateString("sv-SE")
+                              : ""}
+                          </span>
+                        </div>
                       </DropdownMenuItem>
                     ))}
+                    {scorerComps.length === 0 && (
+                      <DropdownMenuItem disabled>
+                        <span className="text-xs text-muted-foreground">
+                          Inga aktiva tävlingar att välja.
+                        </span>
+                      </DropdownMenuItem>
+                    )}
                     <DropdownMenuSeparator />
                     <DropdownMenuItem asChild>
-                      <Link to="/awaiting-access">Ansök om fler tävlingar</Link>
+                      <Link to="/awaiting-access">
+                        <Shield className="mr-2 h-3 w-3" />
+                        <span className="text-xs">Behörigheter & förfrågningar</span>
+                      </Link>
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
               )}
             </div>
           )}
-          
-          {/* Desktop Navigation */}
-          <nav className="hidden md:flex items-center gap-1">
-            {navItems.map(item => (
+
+          {/* Mobile menu toggle */}
+          <button
+            className="lg:hidden inline-flex items-center justify-center rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-foreground"
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+          >
+            {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          </button>
+        </div>
+
+        {/* Desktop Navigation */}
+        <nav className="hidden md:flex items-center gap-1 px-4 pb-2">
+          {navItems.map((item) => (
+            <Link
+              key={item.path + item.label}
+              to={item.path}
+              className={cn(
+                "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
+                location.pathname === item.path
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
+              )}
+            >
+              <item.icon className="h-4 w-4" />
+              {item.label}
+            </Link>
+          ))}
+
+          <div className="ml-auto flex items-center gap-3">
+            {user && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Building2 className="h-4 w-4" />
+                <span>{user.email}</span>
+                {isAdmin && (
+                  <Badge variant="outline" className="ml-2">
+                    Admin
+                  </Badge>
+                )}
+                {isScorer && !isAdmin && (
+                  <Badge variant="outline" className="ml-2">
+                    Scorer
+                  </Badge>
+                )}
+              </div>
+            )}
+            {user && (
+              <button
+                onClick={handleSignOut}
+                className="inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                <LogOut className="h-3 w-3" />
+                Logga ut
+              </button>
+            )}
+          </div>
+        </nav>
+
+        {/* Mobile Navigation */}
+        {mobileMenuOpen && (
+          <nav className="md:hidden border-t bg-card px-4 py-3 space-y-1">
+            {navItems.map((item) => (
               <Link
                 key={item.path + item.label}
                 to={item.path}
+                onClick={handleNavClick}
                 className={cn(
-                  'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors',
+                  "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors",
                   location.pathname === item.path
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
                 )}
               >
                 <item.icon className="h-4 w-4" />
                 {item.label}
               </Link>
             ))}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleSignOut}
-              className="ml-2 text-muted-foreground hover:text-foreground"
-            >
-              <LogOut className="h-4 w-4" />
-            </Button>
-          </nav>
-
-          {/* Mobile Menu Button */}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="md:hidden"
-            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-          >
-            {mobileMenuOpen ? <X className="h-6 w-6" /> : <Menu className="h-6 w-6" />}
-          </Button>
-        </div>
-
-        {/* Mobile Navigation */}
-        {mobileMenuOpen && (
-          <nav className="md:hidden border-t bg-card p-4">
-            {competition && (
-              <Link 
-                to={isAdmin ? "/competitions" : "/"}
-                onClick={() => setMobileMenuOpen(false)}
-                className="flex items-center gap-2 px-4 py-2 mb-2 rounded-lg bg-muted"
-              >
-                <Trophy className="h-4 w-4 text-primary" />
-                <span className="text-sm font-medium">{competition.name}</span>
-              </Link>
-            )}
-            <div className="flex flex-col gap-2">
-              {navItems.map(item => (
-                <Link
-                  key={item.path + item.label}
-                  to={item.path}
-                  onClick={() => setMobileMenuOpen(false)}
-                  className={cn(
-                    'flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors',
-                    location.pathname === item.path
-                      ? 'bg-primary text-primary-foreground'
-                      : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                  )}
-                >
-                  <item.icon className="h-5 w-5" />
-                  {item.label}
-                </Link>
-              ))}
-              <button
-                onClick={handleSignOut}
-                className="flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
-              >
-                <LogOut className="h-5 w-5" />
-                Logga ut
-              </button>
-            </div>
-            {user && (
-              <div className="mt-4 pt-4 border-t text-sm text-muted-foreground px-4">
-                {user.email}
-                {isGlobalAdmin && <Badge variant="secondary" className="ml-2">Global admin</Badge>}
-                {!isGlobalAdmin && isCompetitionAdmin && <Badge variant="secondary" className="ml-2">Tävlingsadmin</Badge>}
-                {isScorer && !isAdmin && <Badge variant="outline" className="ml-2">Scorer</Badge>}
-              </div>
-            )}
           </nav>
         )}
       </header>
 
       {/* Main Content */}
-      <main className="container px-4 py-6">
-        {children}
-      </main>
+      <main className="container px-4 py-6">{children}</main>
     </div>
   );
 }
