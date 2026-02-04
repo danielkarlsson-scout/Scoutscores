@@ -177,7 +177,7 @@ function writeSelectedCompetitionId(id: string | null) {
       localStorage.removeItem(AUTH_SELECTED_KEY);
     }
 
-    // signalera till AuthContext (och ev andra) att tävling ändrats
+    // Samma flik får ingen "storage"-event – signalera manuellt.
     window.dispatchEvent(new Event("scout:selected-competition-changed"));
   } catch {
     // ignore
