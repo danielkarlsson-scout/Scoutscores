@@ -62,11 +62,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const [adminCompetitionIds, setAdminCompetitionIds] = useState<string[]>([]);
 
+  // ✅ Stabil: selected competition i state (inte läst på varje render)
   const [selectedCompetitionId, setSelectedCompetitionId] = useState<string | null>(
     () => readSelectedCompetitionId()
   );
 
-  // Håll selectedCompetitionId i synk (andra tabs / CompetitionContext)
+  // Sync selectedCompetitionId (cross-tab via storage, same-tab via custom event)
   useEffect(() => {
     const sync = () => setSelectedCompetitionId(readSelectedCompetitionId());
 
@@ -83,7 +84,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // Stoppa request-storm: max en fetchRoles åt gången
+  // ✅ Stoppa request-storm: max 1 fetchRoles åt gången
   const rolesInFlightRef = useRef(false);
 
   const fetchRoles = useCallback(async () => {
@@ -107,32 +108,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // 1) GLOBAL ADMIN
       try {
         const { data, error } = await supabase.rpc("is_global_admin");
-        if (error) {
-          console.warn("is_global_admin failed:", error);
-        } else {
-          nextIsGlobalAdmin = !!data;
-        }
+        if (error) console.warn("is_global_admin failed:", error);
+        else nextIsGlobalAdmin = !!data;
       } catch (e) {
         console.warn("is_global_admin threw:", e);
       }
 
-      // 2) COMPETITION ADMIN (vald tävling)
-      if (selectedCompetitionId) {
-        try {
-          const { data, error } = await supabase.rpc("is_competition_admin", {
-            p_competition_id: selectedCompetitionId,
-          });
-          if (error) {
-            console.warn("is_competition_admin failed:", error);
-          } else {
-            nextIsCompetitionAdmin = !!data;
-          }
-        } catch (e) {
-          console.warn("is_competition_admin threw:", e);
-        }
-      }
-
-      // 3) user_competition_roles
+      // 2) user_competition_roles
+      // Obs: vi använder detta som källa för "competition admin" för att undvika
+      // Postgres-ambiguitet om is_competition_admin råkar finnas i flera overloads (uuid/text).
       try {
         const { data, error } = await supabase
           .from("user_competition_roles")
@@ -150,7 +134,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.warn("user_competition_roles select threw:", e);
       }
 
-      // 4) scorer_permissions (per tävling)
+      // Derivera competition-admin för vald tävling från rollerna
+      if (selectedCompetitionId) {
+        nextIsCompetitionAdmin = nextAdminCompetitionIds.includes(
+          String(selectedCompetitionId)
+        );
+      }
+
+      // 3) scorer_permissions (per tävling)
       if (selectedCompetitionId) {
         try {
           const { data, error } = await supabase
@@ -170,9 +161,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      if (nextIsGlobalAdmin || nextIsCompetitionAdmin) {
-        nextIsScorer = true;
-      }
+      // Admin ska alltid få scora
+      if (nextIsGlobalAdmin || nextIsCompetitionAdmin) nextIsScorer = true;
 
       setIsGlobalAdmin(nextIsGlobalAdmin);
       setIsCompetitionAdmin(nextIsCompetitionAdmin);
@@ -183,13 +173,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [user, selectedCompetitionId]);
 
-  // Håll ref till fetchRoles så vi inte behöver lägga den i dependency-array
+  // ✅ Ref så auth subscription aldrig behöver bero på fetchRoles
   const fetchRolesRef = useRef(fetchRoles);
   useEffect(() => {
     fetchRolesRef.current = fetchRoles;
   }, [fetchRoles]);
 
-  // EN auth-subscription, ingen getSession-loop
+  // ✅ Subscribe EN gång. Ingen getSession här (onAuthStateChange ger INITIAL_SESSION i v2)
   useEffect(() => {
     const {
       data: { subscription },
@@ -208,29 +198,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     });
 
-    return () => {
-      subscription.unsubscribe();
-    };
+    return () => subscription.unsubscribe();
   }, []);
 
-  // När user eller selectedCompetitionId ändras → uppdatera roller en gång
+  // ✅ När du byter tävling: refresh roles EN gång (utan storm)
   useEffect(() => {
     if (!user) return;
     void fetchRolesRef.current();
   }, [user, selectedCompetitionId]);
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
     return { error };
   };
 
   const signUp = async (email: string, password: string) => {
-    const redirectTo = import.meta.env.PROD
-      ? "https://scoutscores.vercel.app/verify-email"
-      : "http://localhost:5173/verify-email";
+    const redirectTo =
+      import.meta.env.PROD
+        ? "https://scoutscores.vercel.app/verify-email"
+        : "http://localhost:5173/verify-email";
 
     const { error } = await supabase.auth.signUp({
       email,
@@ -254,13 +240,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return isScorer;
   };
 
-  const isAdmin = useMemo(
-    () =>
+  const isAdmin = useMemo(() => {
+    return (
       isGlobalAdmin ||
       isCompetitionAdmin ||
-      (adminCompetitionIds?.length ?? 0) > 0,
-    [isGlobalAdmin, isCompetitionAdmin, adminCompetitionIds]
-  );
+      (adminCompetitionIds?.length ?? 0) > 0
+    );
+  }, [isGlobalAdmin, isCompetitionAdmin, adminCompetitionIds]);
 
   return (
     <AuthContext.Provider
