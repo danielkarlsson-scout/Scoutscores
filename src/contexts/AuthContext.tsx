@@ -3,7 +3,6 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
   ReactNode,
   useCallback,
@@ -22,7 +21,10 @@ interface AuthContextType {
   isAdmin: boolean;
   isScorer: boolean;
 
+  // alltid definierad array
   adminCompetitionIds: string[];
+  scorerSections: ScoutSection[];
+
   selectedCompetitionId: string | null;
 
   canScoreSection: (section: ScoutSection) => boolean;
@@ -35,17 +37,9 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const SELECTED_KEY_A = "selectedCompetitionId";
-const SELECTED_KEY_B = "scout-selected-competition";
-const SELECTED_CHANGED_EVENT = "scout:selected-competition-changed";
-
-function readSelectedCompetitionId(): string | null {
+function getSelectedCompetitionId(): string | null {
   try {
-    return (
-      localStorage.getItem(SELECTED_KEY_A) ||
-      localStorage.getItem(SELECTED_KEY_B) ||
-      null
-    );
+    return localStorage.getItem("selectedCompetitionId");
   } catch {
     return null;
   }
@@ -61,151 +55,136 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isScorer, setIsScorer] = useState(false);
 
   const [adminCompetitionIds, setAdminCompetitionIds] = useState<string[]>([]);
+  const [scorerSections, setScorerSections] = useState<ScoutSection[]>([]);
 
-  // ✅ Stabil: selected competition i state (inte läst på varje render)
-  const [selectedCompetitionId, setSelectedCompetitionId] = useState<string | null>(
-    () => readSelectedCompetitionId()
-  );
+  const selectedCompetitionId = getSelectedCompetitionId();
 
-  // Sync selectedCompetitionId (cross-tab via storage, same-tab via custom event)
-  useEffect(() => {
-    const sync = () => setSelectedCompetitionId(readSelectedCompetitionId());
-
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === SELECTED_KEY_A || e.key === SELECTED_KEY_B) sync();
-    };
-
-    window.addEventListener("storage", onStorage);
-    window.addEventListener(SELECTED_CHANGED_EVENT, sync as EventListener);
-
-    return () => {
-      window.removeEventListener("storage", onStorage);
-      window.removeEventListener(SELECTED_CHANGED_EVENT, sync as EventListener);
-    };
+  const resetRoleState = useCallback(() => {
+    setIsGlobalAdmin(false);
+    setIsCompetitionAdmin(false);
+    setIsScorer(false);
+    setAdminCompetitionIds([]);
+    setScorerSections([]);
   }, []);
-
-  // ✅ Stoppa request-storm: max 1 fetchRoles åt gången
-  const rolesInFlightRef = useRef(false);
 
   const fetchRoles = useCallback(async () => {
     if (!user) {
-      setIsGlobalAdmin(false);
-      setIsCompetitionAdmin(false);
-      setIsScorer(false);
-      setAdminCompetitionIds([]);
+      resetRoleState();
       return;
     }
 
-    if (rolesInFlightRef.current) return;
-    rolesInFlightRef.current = true;
+    // nästa-state lokalt (så vi sätter allt atomiskt sist)
+    let nextIsGlobalAdmin = false;
+    let nextAdminCompetitionIds: string[] = [];
+    let nextIsCompetitionAdmin = false;
+    let nextScorerSections: ScoutSection[] = [];
+    let nextIsScorer = false;
 
+    // 1) Global admin via RPC (funkar i din DB)
     try {
-      let nextIsGlobalAdmin = false;
-      let nextIsCompetitionAdmin = false;
-      let nextIsScorer = false;
-      let nextAdminCompetitionIds: string[] = [];
-
-      // 1) GLOBAL ADMIN
-      try {
-        const { data, error } = await supabase.rpc("is_global_admin");
-        if (error) console.warn("is_global_admin failed:", error);
-        else nextIsGlobalAdmin = !!data;
-      } catch (e) {
-        console.warn("is_global_admin threw:", e);
+      const { data, error } = await supabase.rpc("is_global_admin");
+      if (error) {
+        console.warn("is_global_admin failed:", error);
+      } else {
+        nextIsGlobalAdmin = !!data;
       }
+    } catch (e) {
+      console.warn("is_global_admin threw:", e);
+    }
 
-      // 2) user_competition_roles
-      // Obs: vi använder detta som källa för "competition admin" för att undvika
-      // Postgres-ambiguitet om is_competition_admin råkar finnas i flera overloads (uuid/text).
+    // 2) Competition admin: använd TABELLEN competition_admins (undvik RPC-overload helt)
+    //    (och undvik user_competition_roles som inte matchar din tabellstruktur)
+    try {
+      const { data, error } = await supabase
+        .from("competition_admins")
+        .select("competition_id")
+        .eq("user_id", user.id);
+
+      if (error) {
+        console.warn("competition_admins select failed:", error);
+      } else {
+        nextAdminCompetitionIds = (data ?? [])
+          .map((r: any) => String(r.competition_id))
+          .filter(Boolean);
+      }
+    } catch (e) {
+      console.warn("competition_admins select threw:", e);
+    }
+
+    // 3) Är admin i vald tävling?
+    if (selectedCompetitionId) {
+      nextIsCompetitionAdmin =
+        nextIsGlobalAdmin || nextAdminCompetitionIds.includes(selectedCompetitionId);
+    } else {
+      nextIsCompetitionAdmin = nextIsGlobalAdmin || nextAdminCompetitionIds.length > 0;
+    }
+
+    // 4) Scorer sections (för vald tävling) från scorer_permissions
+    if (selectedCompetitionId) {
       try {
         const { data, error } = await supabase
-          .from("user_competition_roles")
-          .select("competition_id, role")
-          .eq("user_id", user.id);
+          .from("scorer_permissions")
+          .select("section")
+          .eq("user_id", user.id)
+          .eq("competition_id", selectedCompetitionId);
 
         if (error) {
-          console.warn("Could not load user_competition_roles:", error);
+          console.warn("scorer_permissions select failed:", error);
         } else {
-          nextAdminCompetitionIds = (data ?? [])
-            .filter((r: any) => r.role === "admin")
-            .map((r: any) => String(r.competition_id));
+          nextScorerSections = (data ?? [])
+            .map((r: any) => r.section as ScoutSection)
+            .filter(Boolean);
         }
       } catch (e) {
-        console.warn("user_competition_roles select threw:", e);
+        console.warn("scorer_permissions select threw:", e);
       }
-
-      // Derivera competition-admin för vald tävling från rollerna
-      if (selectedCompetitionId) {
-        nextIsCompetitionAdmin = nextAdminCompetitionIds.includes(
-          String(selectedCompetitionId)
-        );
-      }
-
-      // 3) scorer_permissions (per tävling)
-      if (selectedCompetitionId) {
-        try {
-          const { data, error } = await supabase
-            .from("scorer_permissions")
-            .select("id")
-            .eq("user_id", user.id)
-            .eq("competition_id", selectedCompetitionId)
-            .limit(1);
-
-          if (error) {
-            console.warn("scorer_permissions select failed:", error);
-          } else if ((data ?? []).length > 0) {
-            nextIsScorer = true;
-          }
-        } catch (e) {
-          console.warn("scorer_permissions select threw:", e);
-        }
-      }
-
-      // Admin ska alltid få scora
-      if (nextIsGlobalAdmin || nextIsCompetitionAdmin) nextIsScorer = true;
-
-      setIsGlobalAdmin(nextIsGlobalAdmin);
-      setIsCompetitionAdmin(nextIsCompetitionAdmin);
-      setIsScorer(nextIsScorer);
-      setAdminCompetitionIds(nextAdminCompetitionIds);
-    } finally {
-      rolesInFlightRef.current = false;
     }
-  }, [user, selectedCompetitionId]);
 
-  // ✅ Ref så auth subscription aldrig behöver bero på fetchRoles
-  const fetchRolesRef = useRef(fetchRoles);
-  useEffect(() => {
-    fetchRolesRef.current = fetchRoles;
-  }, [fetchRoles]);
+    // 5) Är scorer?
+    //    - Alla admins ska få scora (du vill att admin alltid kan sätta poäng)
+    //    - Annars: scorer om minst en section finns
+    if (nextIsGlobalAdmin || nextIsCompetitionAdmin) {
+      nextIsScorer = true;
+    } else {
+      nextIsScorer = nextScorerSections.length > 0;
+    }
 
-  // ✅ Subscribe EN gång. Ingen getSession här (onAuthStateChange ger INITIAL_SESSION i v2)
+    setIsGlobalAdmin(nextIsGlobalAdmin);
+    setAdminCompetitionIds(nextAdminCompetitionIds);
+    setIsCompetitionAdmin(nextIsCompetitionAdmin);
+    setScorerSections(nextScorerSections);
+    setIsScorer(nextIsScorer);
+  }, [user, selectedCompetitionId, resetRoleState]);
+
   useEffect(() => {
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_evt, s) => {
+    const { data } = supabase.auth.onAuthStateChange((_evt, s) => {
       setSession(s);
       setUser(s?.user ?? null);
       setLoading(false);
 
       if (s?.user) {
-        void fetchRolesRef.current();
+        void fetchRoles();
       } else {
-        setIsGlobalAdmin(false);
-        setIsCompetitionAdmin(false);
-        setIsScorer(false);
-        setAdminCompetitionIds([]);
+        resetRoleState();
       }
     });
 
-    return () => subscription.unsubscribe();
-  }, []);
+    supabase.auth.getSession().then(({ data: sessionData }) => {
+      setSession(sessionData.session);
+      setUser(sessionData.session?.user ?? null);
+      setLoading(false);
 
-  // ✅ När du byter tävling: refresh roles EN gång (utan storm)
-  useEffect(() => {
-    if (!user) return;
-    void fetchRolesRef.current();
-  }, [user, selectedCompetitionId]);
+      if (sessionData.session?.user) {
+        void fetchRoles();
+      } else {
+        resetRoleState();
+      }
+    });
+
+    // supabase typings kan variera mellan versioner
+    // @ts-ignore
+    return () => data?.subscription?.unsubscribe?.();
+  }, [fetchRoles, resetRoleState]);
 
   const signIn = async (email: string, password: string) => {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -229,24 +208,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = async () => {
     await supabase.auth.signOut();
-    setIsGlobalAdmin(false);
-    setIsCompetitionAdmin(false);
-    setIsScorer(false);
-    setAdminCompetitionIds([]);
-  };
-
-  const canScoreSection = (_section: ScoutSection) => {
-    if (isGlobalAdmin || isCompetitionAdmin) return true;
-    return isScorer;
+    resetRoleState();
   };
 
   const isAdmin = useMemo(() => {
-    return (
-      isGlobalAdmin ||
-      isCompetitionAdmin ||
-      (adminCompetitionIds?.length ?? 0) > 0
-    );
+    return isGlobalAdmin || isCompetitionAdmin || (adminCompetitionIds?.length ?? 0) > 0;
   }, [isGlobalAdmin, isCompetitionAdmin, adminCompetitionIds]);
+
+  const canScoreSection = (section: ScoutSection) => {
+    if (isGlobalAdmin || isCompetitionAdmin) return true;
+    return scorerSections.includes(section);
+  };
 
   return (
     <AuthContext.Provider
@@ -259,6 +231,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isAdmin,
         isScorer,
         adminCompetitionIds,
+        scorerSections,
         selectedCompetitionId,
         canScoreSection,
         refreshRoles: fetchRoles,
