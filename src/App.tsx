@@ -21,13 +21,8 @@ import NotFound from "./pages/NotFound";
 import ResetPassword from "./pages/ResetPassword";
 import VerifyEmail from "./pages/VerifyEmail";
 
-// Scorer: ansök/avvakta behörighet
 import AwaitingAccess from "./pages/AwaitingAccess";
-
-// Intern/admin-sida (behåll om den används)
 import PatrolRegistration from "./pages/PatrolRegistration";
-
-// ✅ NY PUBLIK SIDA
 import Anmalan from "@/pages/Anmalan";
 
 const queryClient = new QueryClient();
@@ -56,7 +51,7 @@ const App = () => (
               {/* Publik resultattavla */}
               <Route path="/scoreboard" element={<ScoreboardWrapper />} />
 
-              {/* Scorer: ansök om fler tävlingar / invänta access */}
+              {/* Scorer: ansök/avvakta behörighet */}
               <Route
                 path="/awaiting-access"
                 element={
@@ -69,6 +64,18 @@ const App = () => (
               {/* Skyddade routes */}
               <Route
                 path="/"
+                element={
+                  <ProtectedRoute>
+                    <AppLayout>
+                      <Dashboard />
+                    </AppLayout>
+                  </ProtectedRoute>
+                }
+              />
+
+              {/* ✅ FIX: /dashboard alias */}
+              <Route
+                path="/dashboard"
                 element={
                   <ProtectedRoute>
                     <AppLayout>
@@ -144,7 +151,6 @@ const App = () => (
                 }
               />
 
-              {/* Ev. intern sida för hantering */}
               <Route
                 path="/patrol-registration"
                 element={
